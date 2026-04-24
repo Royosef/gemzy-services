@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+Pillow
+google-genai
+sentry-sdk
+supabase>=2.5.0

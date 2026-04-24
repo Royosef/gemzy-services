@@ -1,0 +1,3 @@
+-r server/requirements.txt
+-e ../../packages/prompting
+pytest>=8.0.0

@@ -1,0 +1,31 @@
+# Python caches
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.hypothesis/
+
+# Virtual environments
+**/.venv/
+**/venv/
+
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Coverage and test artifacts
+**/.coverage
+**/.coverage.*
+**/htmlcov/
+
+# Logs
+**/*.log
+
+# OS / editor clutter
+.DS_Store
+.idea/
+.vscode/
