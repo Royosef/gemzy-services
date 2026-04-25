@@ -118,22 +118,21 @@ def _normalize_credit_value(value: object | None) -> int:
 
 
 def _adjust_profile_credits(user_id: str, delta: int, *, max_attempts: int = 5) -> int | None:
-    """Atomically adjust a user's credits with compare-and-set retries."""
-
-    if delta == 0:
-        sb = get_client()
-        resp = sb.table("profiles").select("credits").eq("id", user_id).limit(1).execute()
-        rows = resp.data or []
-        if not rows:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Unable to load your credit balance right now.",
-            )
-        return _normalize_credit_value(rows[0].get("credits"))
+    """Atomically adjust monthly credits first, then purchased credits."""
 
     sb = get_client()
+    if delta == 0:
+        resp = sb.table("profiles").select("credits,purchased_credits").eq("id", user_id).limit(1).execute()
+        rows = resp.data or []
+        if not rows:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to load your credit balance right now.",
+            )
+        return _normalize_credit_value(rows[0].get("credits")) + _normalize_credit_value(rows[0].get("purchased_credits"))
+
     for _ in range(max_attempts):
-        resp = sb.table("profiles").select("credits").eq("id", user_id).limit(1).execute()
+        resp = sb.table("profiles").select("credits,purchased_credits").eq("id", user_id).limit(1).execute()
         rows = resp.data or []
         if not rows:
             raise HTTPException(
@@ -141,20 +140,32 @@ def _adjust_profile_credits(user_id: str, delta: int, *, max_attempts: int = 5) 
                 detail="Unable to load your credit balance right now.",
             )
 
-        current_credits = _normalize_credit_value(rows[0].get("credits"))
-        if delta < 0 and current_credits < -delta:
+        current_monthly = _normalize_credit_value(rows[0].get("credits"))
+        current_purchased = _normalize_credit_value(rows[0].get("purchased_credits"))
+        current_total = current_monthly + current_purchased
+        if delta < 0 and current_total < -delta:
             return None
 
-        new_credits = max(0, current_credits + delta)
+        if delta < 0:
+            spend = -delta
+            spend_monthly = min(current_monthly, spend)
+            spend_purchased = spend - spend_monthly
+            new_monthly = current_monthly - spend_monthly
+            new_purchased = current_purchased - spend_purchased
+        else:
+            new_monthly = current_monthly + delta
+            new_purchased = current_purchased
+
         update_resp = (
             sb.table("profiles")
-            .update({"credits": new_credits}, count="exact")
+            .update({"credits": new_monthly, "purchased_credits": new_purchased}, count="exact")
             .eq("id", user_id)
-            .eq("credits", current_credits)
+            .eq("credits", current_monthly)
+            .eq("purchased_credits", current_purchased)
             .execute()
         )
         if (update_resp.count or 0) == 1:
-            return new_credits
+            return new_monthly + new_purchased
 
     logger.warning("Failed to update credits for user %s after %s attempts", user_id, max_attempts)
     raise HTTPException(

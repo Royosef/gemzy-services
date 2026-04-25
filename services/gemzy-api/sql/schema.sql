@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   name TEXT,
   plan plan_tier NOT NULL DEFAULT 'Free',
   credits INTEGER NOT NULL DEFAULT 0 CHECK (credits >= 0),
+  purchased_credits INTEGER NOT NULL DEFAULT 0 CHECK (purchased_credits >= 0),
   avatar_url TEXT,
   notification_preferences JSONB NOT NULL DEFAULT jsonb_build_object(
     'gemzyUpdates', TRUE,

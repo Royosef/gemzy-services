@@ -94,7 +94,7 @@ def test_sync_credit_pack_purchase_does_not_grant_credits_before_webhook(monkeyp
     monkeypatch.setattr(
         payments,
         "_fetch_current_profile",
-        lambda _sb, _user_id: {"credits": 25},
+        lambda _sb, _user_id: {"credits": 25, "purchased_credits": 10},
     )
     monkeypatch.setattr(payments, "get_client", lambda: object())
 
@@ -111,7 +111,7 @@ def test_sync_credit_pack_purchase_does_not_grant_credits_before_webhook(monkeyp
         "action": "awaiting_webhook",
         "creditsAdded": 0,
         "expectedCredits": 100,
-        "currentCredits": 25,
+        "currentCredits": 35,
     }
 
 

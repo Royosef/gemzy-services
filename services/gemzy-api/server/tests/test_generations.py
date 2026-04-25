@@ -142,19 +142,23 @@ class _CreditTable:
         if self._operation and self._operation[0] == "select":
             if user_id not in self._client.credits:
                 return SimpleNamespace(data=[])
-            return SimpleNamespace(data=[{"credits": self._client.credits[user_id]}], count=1)
+            return SimpleNamespace(data=[{"credits": self._client.credits[user_id], "purchased_credits": self._client.purchased_credits.get(user_id, 0)}], count=1)
 
         if self._operation and self._operation[0] == "update":
             expected = next((value for column, value in self._filters if column == "credits"), None)
+            expected_purchased = next((value for column, value in self._filters if column == "purchased_credits"), None)
             current = self._client.credits.get(user_id)
+            current_purchased = self._client.purchased_credits.get(user_id, 0)
             if self._client.fail_first_update:
                 self._client.fail_first_update = False
                 self._client.credits[user_id] = self._client.concurrent_credit_value
+                self._client.purchased_credits[user_id] = 0
                 return SimpleNamespace(data=[], count=0)
-            if current is None or (expected is not None and current != expected):
+            if current is None or (expected is not None and current != expected) or (expected_purchased is not None and current_purchased != expected_purchased):
                 return SimpleNamespace(data=[], count=0)
             self._client.credits[user_id] = self._operation[1]["credits"]
-            return SimpleNamespace(data=[{"credits": self._client.credits[user_id]}], count=1)
+            self._client.purchased_credits[user_id] = self._operation[1].get("purchased_credits", current_purchased)
+            return SimpleNamespace(data=[{"credits": self._client.credits[user_id], "purchased_credits": self._client.purchased_credits[user_id]}], count=1)
 
         return SimpleNamespace(data=[], count=0)
 
@@ -164,10 +168,12 @@ class _CreditClient:
         self,
         *,
         credits: dict[str, int],
+        purchased_credits: dict[str, int] | None = None,
         fail_first_update: bool = False,
         concurrent_credit_value: int = 0,
     ) -> None:
         self.credits = dict(credits)
+        self.purchased_credits = dict(purchased_credits or {})
         self.fail_first_update = fail_first_update
         self.concurrent_credit_value = concurrent_credit_value
 
@@ -224,6 +230,20 @@ def test_adjust_profile_credits_retries_after_compare_and_set_conflict(monkeypat
 
     assert remaining == 4
     assert credit_client.credits["user-123"] == 4
+
+
+def test_adjust_profile_credits_spends_purchased_credits_after_monthly(monkeypatch: pytest.MonkeyPatch) -> None:
+    credit_client = _CreditClient(
+        credits={"user-123": 3},
+        purchased_credits={"user-123": 8},
+    )
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+
+    remaining = generations._adjust_profile_credits("user-123", -5)
+
+    assert remaining == 6
+    assert credit_client.credits["user-123"] == 0
+    assert credit_client.purchased_credits["user-123"] == 6
 
 
 def test_generation_refunds_reserved_credits_when_dispatch_fails(

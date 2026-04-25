@@ -363,7 +363,7 @@ def _user_profile(user_id: str, *, client=None) -> dict:
         resp = (
             sb.table("profiles")
             .select(
-                "id,name,plan,credits,avatar_url,notification_preferences,is_admin,deactivated_at,retention_offer_used,retention_offer_used_at,rc_last_event_ms,subscription_expires_at,onboarding_completed,next_credit_reset_at,on_model_style_trials,pure_jewelry_style_trials"
+                "id,name,plan,credits,purchased_credits,avatar_url,notification_preferences,is_admin,deactivated_at,retention_offer_used,retention_offer_used_at,rc_last_event_ms,subscription_expires_at,onboarding_completed,next_credit_reset_at,on_model_style_trials,pure_jewelry_style_trials"
             )
             .eq("id", user_id)
             .limit(1)
@@ -423,7 +423,8 @@ def _build_user_state(
 
     name = _clean_text(profile.get("name"))
     plan = profile.get("plan")
-    credits = profile.get("credits")
+    monthly_credits = _normalize_credits(profile.get("credits"))
+    purchased_credits = _normalize_credits(profile.get("purchased_credits"))
     avatar = _extract_avatar(profile)
     notifications = _normalize_notifications(profile.get("notification_preferences"))
     is_admin = bool(profile.get("is_admin"))
@@ -437,7 +438,9 @@ def _build_user_state(
         email=_auth_user_email(auth_user, metadata),
         name=name,
         plan=normalize_plan(plan),
-        credits=_normalize_credits(credits),
+        credits=monthly_credits + purchased_credits,
+        monthlyCredits=monthly_credits,
+        purchasedCredits=purchased_credits,
         createdAt=created_at,
         avatarUrl=avatar,
         notificationPreferences=notifications,

@@ -108,6 +108,8 @@ class UserState(BaseModel):
     name: str | None = None
     plan: str | None = None
     credits: int = 0
+    monthlyCredits: int = 0
+    purchasedCredits: int = 0
     createdAt: str | None = None
     avatarUrl: str | None = None
     notificationPreferences: NotificationPreferences | None = None

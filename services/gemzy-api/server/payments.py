@@ -212,7 +212,7 @@ def _fetch_current_profile(sb, user_id: str) -> dict | None:
     try:
         resp = (
             sb.table("profiles")
-            .select("plan,credits,rc_last_event_ms,subscription_expires_at,next_credit_reset_at")
+            .select("plan,credits,purchased_credits,rc_last_event_ms,subscription_expires_at,next_credit_reset_at")
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -378,6 +378,7 @@ async def rc_webhook(request: Request) -> dict:
     
     current_plan = current_profile.get("plan", "Free")
     current_credits = current_profile.get("credits", 0)
+    current_purchased_credits = current_profile.get("purchased_credits", 0)
     last_event_ms = current_profile.get("rc_last_event_ms")
     current_expires_at = current_profile.get("subscription_expires_at")
     should_reset_credit_schedule = False
@@ -447,7 +448,7 @@ async def rc_webhook(request: Request) -> dict:
         update_data["plan"] = new_tier  # Update plan immediately
         # Do NOT overwrite credits (Rule B)
         
-        # Rule C: Upgrade top-up (Pro → Designer mid-cycle)
+        # Rule C: Upgrade top-up (Pro â†’ Designer mid-cycle)
         if is_upgrade(current_plan, new_tier):
             new_tier_allocation = get_plan_initial_credits(new_tier)
             if current_credits < new_tier_allocation:
@@ -481,7 +482,7 @@ async def rc_webhook(request: Request) -> dict:
             logger.info(f"[RC Webhook] NON_RENEWING_PURCHASE already synced for {app_user_id}: {sync_marker}")
             return {"status": "ok", "action": "already_synced"}
 
-        update_data["credits"] = max(0, current_credits + credit_amount)
+        update_data["purchased_credits"] = max(0, current_purchased_credits + credit_amount)
         print(f"[RC Webhook] NON_RENEWING_PURCHASE: {app_user_id} +{credit_amount} credits")
         logger.info(f"[RC Webhook] NON_RENEWING_PURCHASE: {app_user_id} +{credit_amount} credits")
         credit_pack_sync_marker_to_remember = sync_marker
@@ -592,20 +593,22 @@ async def sync_credit_pack_purchase(
             "status": "ok",
             "action": "already_synced",
             "creditsAdded": 0,
-            "currentCredits": current_profile.get("credits", 0) if current_profile else current.credits,
+            "currentCredits": ((current_profile.get("credits", 0) + current_profile.get("purchased_credits", 0)) if current_profile else current.credits),
         }
 
     current_profile = _fetch_current_profile(get_client(), current.id)
     if not current_profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
-    current_credits = current_profile.get("credits", current.credits)
+    current_credits = current_profile.get("credits", 0)
+    current_purchased_credits = current_profile.get("purchased_credits", 0)
+    current_total_credits = current_credits + current_purchased_credits
     logger.info(
-        "[Credit Sync] awaiting webhook grant user=%s product=%s marker=%s current_credits=%s",
+        "[Credit Sync] awaiting webhook purchased_credits grant user=%s product=%s marker=%s current_credits=%s",
         current.id,
         product_id,
         sync_marker,
-        current_credits,
+        current_total_credits,
     )
 
     return {
@@ -613,7 +616,7 @@ async def sync_credit_pack_purchase(
         "action": "awaiting_webhook",
         "creditsAdded": 0,
         "expectedCredits": credit_amount,
-        "currentCredits": current_credits,
+        "currentCredits": current_total_credits,
     }
 
 
