@@ -30,11 +30,21 @@ RC_API_KEY = (
 RC_API_BASE = os.getenv("REVENUECAT_API_BASE", "https://api.revenuecat.com")
 _CREDIT_PACK_SYNC_METADATA_KEY = "creditPackSyncMarkers"
 _MAX_CREDIT_PACK_SYNC_MARKERS = 40
+SUBSCRIPTION_ACCOUNT_MISMATCH_CODE = "subscription_account_mismatch"
+SUBSCRIPTION_ACCOUNT_MISMATCH_MESSAGE = (
+    "This subscription belongs to another account on this device."
+)
 
 
 class CreditPackSyncRequest(BaseModel):
     productIdentifier: str
     purchaseDate: str | None = None
+
+
+class SubscriptionSyncRequest(BaseModel):
+    revenuecat_app_user_id: str | None = None
+    revenuecat_original_app_user_id: str | None = None
+    source: str | None = None
 
 
 def _product_to_tier(product_id: str) -> str:
@@ -72,6 +82,67 @@ def _build_credit_pack_sync_marker(product_id: str | None, purchase_ms: int | No
         return None
 
     return f"{product_id.strip().lower()}:{purchase_ms}"
+
+
+def _normalize_app_user_id(value: object | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    return normalized or None
+
+
+def _is_revenuecat_anonymous_app_user_id(value: str | None) -> bool:
+    if not value:
+        return False
+
+    return value.startswith("$RCAnonymousID:") or value.startswith("RCAnonymousID:")
+
+
+def _has_subscription_account_mismatch(app_user_id: object | None, original_app_user_id: object | None) -> bool:
+    app_user = _normalize_app_user_id(app_user_id)
+    original_user = _normalize_app_user_id(original_app_user_id)
+
+    if not app_user or not original_user:
+        return False
+    if _is_revenuecat_anonymous_app_user_id(original_user):
+        return False
+
+    return original_user != app_user
+
+
+def _subscription_account_mismatch_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": SUBSCRIPTION_ACCOUNT_MISMATCH_CODE,
+            "message": SUBSCRIPTION_ACCOUNT_MISMATCH_MESSAGE,
+        },
+    )
+
+
+def _ensure_subscription_sync_ownership(
+    current_user_id: str,
+    *,
+    payload: SubscriptionSyncRequest | None = None,
+    subscriber: dict | None = None,
+) -> None:
+    if payload:
+        payload_app_user_id = _normalize_app_user_id(payload.revenuecat_app_user_id)
+        if payload_app_user_id and payload_app_user_id != current_user_id:
+            raise _subscription_account_mismatch_error()
+
+        if _has_subscription_account_mismatch(
+            current_user_id,
+            payload.revenuecat_original_app_user_id,
+        ):
+            raise _subscription_account_mismatch_error()
+
+    if subscriber and _has_subscription_account_mismatch(
+        current_user_id,
+        subscriber.get("original_app_user_id"),
+    ):
+        raise _subscription_account_mismatch_error()
 
 
 def _get_credit_pack_sync_markers(metadata: dict | None) -> list[str]:
@@ -286,6 +357,16 @@ async def rc_webhook(request: Request) -> dict:
     
     if not app_user_id:
         return {"status": "ignored", "reason": "no_user_id"}
+
+    original_app_user_id = event.get("original_app_user_id")
+    if _has_subscription_account_mismatch(app_user_id, original_app_user_id):
+        logger.warning(
+            "[RC Webhook] Ignoring account ownership mismatch: app_user_id=%s original_app_user_id=%s type=%s",
+            app_user_id,
+            original_app_user_id,
+            event_type,
+        )
+        return {"status": "ignored", "reason": SUBSCRIPTION_ACCOUNT_MISMATCH_CODE}
 
     sb = get_client()
     
@@ -546,14 +627,20 @@ async def sync_subscription(
     This provides immediate UI feedback. Credits and retention logic
     are handled by the webhook (source of truth).
     """
-    # Client payload is intentionally ignored for plan selection.
-    # We reconcile directly from RevenueCat to avoid trusting client-provided product IDs.
+    # Client payload is used only as an ownership guard. Plan selection is still
+    # reconciled directly from RevenueCat to avoid trusting client product IDs.
+    payload: SubscriptionSyncRequest | None = None
     try:
-        await request.json()
+        raw_payload = await request.json()
+        if isinstance(raw_payload, dict):
+            payload = SubscriptionSyncRequest(**raw_payload)
     except Exception:
         pass
 
+    _ensure_subscription_sync_ownership(current.id, payload=payload)
+
     subscriber = await _fetch_rc_subscriber(current.id)
+    _ensure_subscription_sync_ownership(current.id, subscriber=subscriber)
     new_tier, expires_at = _rc_subscriber_to_plan_and_expiry(subscriber)
 
     logger.info("[Sync] User %s reconciled to %s from RevenueCat", current.id, new_tier)
