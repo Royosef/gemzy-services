@@ -31,6 +31,8 @@ _ALLOWED_KINDS = {
     "maintenance",
     "generation_completed",
     "generation_failed",
+    "image_edit_completed",
+    "image_edit_failed",
     "subscription_payment_failed",
     "subscription_renews_soon",
 }

@@ -378,6 +378,42 @@ class GenerationResultPayload(BaseModel):
     createdAt: str | None = None
 
 
+class ImageEditSourcePayload(BaseModel):
+    """Source image metadata for a follow-up edit request."""
+
+    sourceKey: str | None = None
+    url: str | None = None
+    previewUrl: str | None = None
+    storagePath: str | None = None
+    collectionId: str | None = None
+    collectionItemId: str | None = None
+    generationJobId: str | None = None
+    modelSlug: str | None = None
+    modelName: str | None = None
+    createdAt: str | None = None
+
+
+class ImageEditInstructionPayload(BaseModel):
+    """Resolved edit instruction returned to the client for review."""
+
+    id: str
+    label: str
+    category: str
+    prompt: str | None = None
+
+
+class CreateImageEditPayload(BaseModel):
+    """Payload sent by the client to start an image edit job."""
+
+    generationServerUrl: str | None = None
+    sourceImage: GenerationUploadPayload
+    source: ImageEditSourcePayload
+    edits: list[str]
+    aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"] = "1:1"
+    dims: GenerationDimensions = Field(default_factory=lambda: GenerationDimensions(w=1080, h=1080))
+    quality: Literal["1080p", "2K", "4K"] = "1080p"
+
+
 class CreateGenerationResponse(BaseModel):
     """Response envelope returned after creating a generation."""
 
@@ -389,6 +425,10 @@ class CreateGenerationResponse(BaseModel):
     completedLooks: int | None = Field(default=None, ge=0)
     errors: list[str] = Field(default_factory=list)
     remainingCredits: int | None = Field(default=None, ge=0)
+    jobType: str | None = None
+    editSource: ImageEditSourcePayload | None = None
+    editInstructions: list[ImageEditInstructionPayload] = Field(default_factory=list)
+    editCreditCost: int | None = Field(default=None, ge=0)
 
 
 class GenerationJobEvent(BaseModel):

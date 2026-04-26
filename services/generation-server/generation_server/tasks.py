@@ -74,10 +74,19 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
         product_images: List[bytes] = [decode_upload_image(upload.base64) for upload in request.uploads]
         product_image_mime_types = [upload.mimeType or "image/png" for upload in request.uploads]
         
-        # Pure Jewelry uses the product itself as the reference, skipping external model fetch
+        is_image_edit = (
+            request.model.slug == "image-edit"
+            or request.style.get("task_type") == "image_edit"
+        )
+
+        # Pure Jewelry and edit jobs use uploaded imagery as their reference,
+        # so they should not fetch an external model image.
         if request.model.slug == "pure-jewelry":
             model_image = product_images[0] if product_images else b""
             model_image_mime_type = product_image_mime_types[0] if product_image_mime_types else "image/png"
+        elif is_image_edit:
+            model_image = b""
+            model_image_mime_type = None
         else:
             model_image = await resolve_model_image(request, settings)
             model_image_mime_type = "image/png"

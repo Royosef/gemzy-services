@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import RLock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .schemas import GenerationResultPayload
 
@@ -26,6 +26,10 @@ class GenerationJob:
     model_name: str | None = None
     style: Dict[str, str] | None = None
     unsaved_collection_id: str | None = None
+    job_type: str = "generation"
+    edit_source: dict[str, Any] | None = None
+    edit_instructions: list[dict[str, Any]] = field(default_factory=list)
+    edit_credit_cost: int | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -45,6 +49,10 @@ def create_job(
     model_id: str | None = None,
     model_name: str | None = None,
     style: Dict[str, str] | None = None,
+    job_type: str = "generation",
+    edit_source: dict[str, Any] | None = None,
+    edit_instructions: list[dict[str, Any]] | None = None,
+    edit_credit_cost: int | None = None,
 ) -> GenerationJob:
     job = GenerationJob(
         id=job_id,
@@ -53,6 +61,10 @@ def create_job(
         model_id=model_id,
         model_name=model_name,
         style=style,
+        job_type=job_type,
+        edit_source=edit_source,
+        edit_instructions=edit_instructions or [],
+        edit_credit_cost=edit_credit_cost,
     )
     with _LOCK:
         _JOBS[job_id] = job
@@ -65,7 +77,7 @@ def get_job(job_id: str) -> Optional[GenerationJob]:
 
 
 def to_response(job: GenerationJob) -> dict:
-    return {
+    payload = {
         "id": job.id,
         "status": job.status,
         "progress": job.progress,
@@ -74,6 +86,16 @@ def to_response(job: GenerationJob) -> dict:
         "completedLooks": job.completed_looks,
         "errors": job.errors,
     }
+    if job.job_type != "generation":
+        payload.update(
+            {
+                "jobType": job.job_type,
+                "editSource": job.edit_source,
+                "editInstructions": job.edit_instructions,
+                "editCreditCost": job.edit_credit_cost,
+            }
+        )
+    return payload
 
 
 def mark_started(job: GenerationJob) -> None:

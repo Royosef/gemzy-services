@@ -48,10 +48,14 @@ from .notifications import publish_app_notification
 from .schemas import (
     CreateGenerationPayload,
     CreateGenerationResponse,
+    CreateImageEditPayload,
+    GenerationModelPayload,
     GenerationUiCatalogResponse,
     GenerationJobEvent,
     GenerationResultPayload,
     GenerationUploadPayload,
+    ImageEditInstructionPayload,
+    ItemPayload,
     UserState,
 )
 from .supabase_client import get_client
@@ -68,6 +72,93 @@ QUALITY_FORWARD_MAP = {
 
 GENERATION_START_FAILURE_MESSAGE = "Unable to start generation right now. Please try again."
 GENERATION_JOB_FAILURE_MESSAGE = "Generation failed. Please try again."
+IMAGE_EDIT_START_FAILURE_MESSAGE = "Unable to start image edit right now. Please try again."
+IMAGE_EDIT_JOB_FAILURE_MESSAGE = "Image edit failed. Please try again."
+IMAGE_EDIT_BASE_COST = 8
+IMAGE_EDIT_UPSCALE_COST = 14
+
+IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
+    "jewelry_smaller": {
+        "label": "Make the jewelry a bit smaller",
+        "category": "jewelry",
+        "prompt": "Make the jewelry slightly smaller while preserving its design and placement.",
+    },
+    "jewelry_bigger": {
+        "label": "Make the jewelry a bit bigger",
+        "category": "jewelry",
+        "prompt": "Make the jewelry slightly larger while keeping it realistic and proportional.",
+    },
+    "enhance_shine": {
+        "label": "Enhance shine & reflections",
+        "category": "jewelry",
+        "prompt": "Enhance gemstone and metal shine, reflections, depth, and polished highlights.",
+    },
+    "zoom_in": {
+        "label": "Zoom in on the jewelry",
+        "category": "framing",
+        "prompt": "Crop closer toward the jewelry while keeping the image premium and balanced.",
+    },
+    "zoom_out": {
+        "label": "Zoom out for full context",
+        "category": "framing",
+        "prompt": "Widen the framing to show more context around the jewelry and scene.",
+    },
+    "camera_low_angle": {
+        "label": "Low angle",
+        "category": "framing",
+        "prompt": "Reframe from a subtle low angle perspective.",
+    },
+    "camera_high_angle": {
+        "label": "High angle",
+        "category": "framing",
+        "prompt": "Reframe from a subtle high angle perspective.",
+    },
+    "camera_rotate_left": {
+        "label": "Rotate Slight Left",
+        "category": "framing",
+        "prompt": "Rotate the composition slightly left while keeping the jewelry sharp.",
+    },
+    "lighting_soft_diffused": {
+        "label": "Soft Diffused",
+        "category": "lighting_photo",
+        "prompt": "Apply soft diffused studio lighting with gentle, flattering shadows.",
+    },
+    "lighting_side_rim": {
+        "label": "Side Rim",
+        "category": "lighting_photo",
+        "prompt": "Add a tasteful side rim light that outlines the jewelry and creates depth.",
+    },
+    "lighting_top_down": {
+        "label": "Top Down",
+        "category": "lighting_photo",
+        "prompt": "Use elegant top-down lighting with clean highlights on the jewelry.",
+    },
+    "remove_background": {
+        "label": "Remove the background",
+        "category": "lighting_photo",
+        "prompt": "Remove the background and create a clean transparent product-style cutout.",
+    },
+    "model_pose": {
+        "label": "Change the model's pose",
+        "category": "model",
+        "prompt": "Adjust the model pose to feel more natural and editorial while preserving identity.",
+    },
+    "outfit_color": {
+        "label": "Change the outfit color",
+        "category": "model",
+        "prompt": "Change the outfit color tastefully without changing jewelry or facial identity.",
+    },
+    "upscale_image": {
+        "label": "Upscale the image",
+        "category": "upscale_sharpen",
+        "prompt": "Upscale the image for higher resolution while preserving natural detail.",
+    },
+    "sharpen_image": {
+        "label": "Sharpen the image",
+        "category": "upscale_sharpen",
+        "prompt": "Sharpen fine details on the jewelry and image while avoiding artifacts.",
+    },
+}
 
 
 def _publish_generation_completed_notification(job: GenerationJob) -> None:
@@ -100,6 +191,48 @@ def _publish_generation_failed_notification(job: GenerationJob) -> None:
         action={
             "pathname": "/generating",
             "params": {"jobId": job.id},
+        },
+    )
+
+
+def _image_edit_action_params(job: GenerationJob) -> dict[str, str]:
+    params = {"editJobId": job.id}
+    source_key = (
+        job.edit_source.get("sourceKey")
+        if isinstance(job.edit_source, dict)
+        else None
+    )
+    if isinstance(source_key, str) and source_key:
+        params["sourceKey"] = source_key
+    return params
+
+
+def _publish_image_edit_completed_notification(job: GenerationJob) -> None:
+    publish_app_notification(
+        category="personal",
+        kind="image_edit_completed",
+        title="Your edit is ready",
+        body="Tap to review your edited image",
+        entity_key=f"image-edit:{job.id}",
+        target_user_id=job.user_id,
+        action={
+            "pathname": "/review-edit",
+            "params": _image_edit_action_params(job),
+        },
+    )
+
+
+def _publish_image_edit_failed_notification(job: GenerationJob) -> None:
+    publish_app_notification(
+        category="personal",
+        kind="image_edit_failed",
+        title="Edit failed",
+        body="Tap to review the failed edit",
+        entity_key=f"image-edit-failed:{job.id}",
+        target_user_id=job.user_id,
+        action={
+            "pathname": "/review-edit",
+            "params": _image_edit_action_params(job),
         },
     )
 
@@ -336,13 +469,15 @@ def _persist_generation_result(
     try:
         bucket = _get_collections_bucket()
 
-        storage_prefix = f"{_user_storage_prefix(job.user_id)}/generations/{job.id}"
+        result_source = "image_edit" if job.job_type == "image_edit" else "generation"
+        storage_segment = "image-edits" if job.job_type == "image_edit" else "generations"
+        storage_prefix = f"{_user_storage_prefix(job.user_id)}/{storage_segment}/{job.id}"
         storage_name = f"{storage_prefix}/{uuid4().hex}.png"
         blob = bucket.blob(storage_name)
 
         metadata = {
             "appUserId": job.user_id,
-            "source": "generation",
+            "source": result_source,
             "jobId": job.id,
         }
         if COLLECTIONS_OWNER_METADATA_KEY and COLLECTIONS_OWNER_METADATA_KEY != "appUserId":
@@ -351,6 +486,9 @@ def _persist_generation_result(
             metadata["modelId"] = job.model_id
         if job.model_name:
             metadata["modelName"] = job.model_name
+        if job.job_type == "image_edit":
+            metadata["editSource"] = json.dumps(job.edit_source or {})
+            metadata["editInstructions"] = json.dumps(job.edit_instructions or [])
 
         blob.metadata = metadata
         if COLLECTIONS_CACHE_CONTROL:
@@ -389,7 +527,7 @@ def _persist_generation_result(
             metadata_payload: dict[str, Any] = {
                 "contentType": "image/png",
                 "size": len(image_bytes),
-                "source": "generation",
+                "source": "image_edit" if job.job_type == "image_edit" else "generation",
                 "jobId": job.id,
                 "durationMs": int((datetime.utcnow() - job.created_at).total_seconds() * 1000),
             }
@@ -399,6 +537,9 @@ def _persist_generation_result(
                 metadata_payload["modelName"] = job.model_name
             if job.style:
                 metadata_payload["style"] = job.style
+            if job.job_type == "image_edit":
+                metadata_payload["editSource"] = job.edit_source
+                metadata_payload["editInstructions"] = job.edit_instructions
 
             record_payload: dict[str, Any] = {
                 "collection_id": collection_id,
@@ -554,7 +695,11 @@ COST_PER_LOOK = {
 def get_generation_config() -> dict[str, Any]:
     """Return the current configuration for generation costs."""
     return {
-        "costPerLook": COST_PER_LOOK
+        "costPerLook": COST_PER_LOOK,
+        "imageEditCost": {
+            "base": IMAGE_EDIT_BASE_COST,
+            "upscale": IMAGE_EDIT_UPSCALE_COST,
+        },
     }
 
 
@@ -572,6 +717,231 @@ def get_generation_ui_config() -> GenerationUiCatalogResponse:
         )
     catalog = resolve_generation_ui_catalog(client=client)
     return GenerationUiCatalogResponse(**catalog)
+
+
+def _resolve_image_edit_instructions(edit_ids: list[str]) -> list[ImageEditInstructionPayload]:
+    seen: set[str] = set()
+    instructions: list[ImageEditInstructionPayload] = []
+    unknown: list[str] = []
+
+    for edit_id in edit_ids:
+        normalized = edit_id.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        option = IMAGE_EDIT_OPTIONS.get(normalized)
+        if option is None:
+            unknown.append(normalized)
+            continue
+        instructions.append(
+            ImageEditInstructionPayload(
+                id=normalized,
+                label=option["label"],
+                category=option["category"],
+                prompt=option["prompt"],
+            )
+        )
+
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported image edit option: {', '.join(unknown)}",
+        )
+    if not instructions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Choose at least one edit.",
+        )
+    return instructions
+
+
+def _calculate_image_edit_cost(instructions: list[ImageEditInstructionPayload]) -> int:
+    return (
+        IMAGE_EDIT_UPSCALE_COST
+        if any(instruction.id == "upscale_image" for instruction in instructions)
+        else IMAGE_EDIT_BASE_COST
+    )
+
+
+def _build_image_edit_prompt(
+    payload: CreateImageEditPayload,
+    instructions: list[ImageEditInstructionPayload],
+) -> str:
+    lines = [
+        "Edit the uploaded source image. Preserve the original jewelry design, materials, identity, and premium campaign quality.",
+        "Apply only the requested edits. Do not invent new jewelry, change logos, distort anatomy, or alter text/engravings unless directly required.",
+    ]
+    if payload.source.modelSlug == "pure-jewelry":
+        lines.append(
+            "The source was created as pure jewelry, so do not add or alter a model/person unless explicitly requested."
+        )
+
+    lines.append("Requested edits:")
+    for index, instruction in enumerate(instructions, start=1):
+        lines.append(f"{index}. {instruction.label}: {instruction.prompt or instruction.label}")
+    return "\n".join(lines)
+
+
+def _build_image_edit_generation_payload(
+    payload: CreateImageEditPayload,
+    *,
+    user: UserState,
+    required_credits: int,
+    instructions: list[ImageEditInstructionPayload],
+) -> CreateGenerationPayload:
+    return CreateGenerationPayload(
+        generationServerUrl=payload.generationServerUrl,
+        uploads=[payload.sourceImage],
+        items=[
+            ItemPayload(
+                id="image-edit-source",
+                type="Image",
+                size="Original",
+                uploadId=payload.sourceImage.id,
+            )
+        ],
+        model=GenerationModelPayload(
+            id="image-edit",
+            slug="image-edit",
+            name="Image Edit",
+            planTier="Pro",
+            tags=[],
+            imageUri=payload.source.url or payload.source.previewUrl,
+        ),
+        style={
+            "task_type": "image_edit",
+            "edit_ids": ",".join(instruction.id for instruction in instructions),
+            "source_model_slug": payload.source.modelSlug or "",
+        },
+        mode="ADVANCED",
+        aspect=payload.aspect,
+        dims=payload.dims,
+        looks=1,
+        quality=payload.quality,
+        plan=user.plan or "Pro",
+        creditsNeeded=required_credits,
+        promptOverrides=[_build_image_edit_prompt(payload, instructions)],
+    )
+
+
+@router.post("/edits", response_model=CreateGenerationResponse)
+@limiter.limit(LIMIT_generation_create)
+async def create_image_edit(
+    request: Request,
+    payload: CreateImageEditPayload,
+    user: UserState = Depends(get_current_user),
+) -> CreateGenerationResponse:
+    """Accept a follow-up edit request for a generated image."""
+
+    from .plans import normalize_plan
+
+    tier_levels = {"Free": 0, "Starter": 1, "Pro": 2, "Designer": 3}
+    user_tier = normalize_plan(user.plan)
+    if tier_levels.get(user_tier, 0) < tier_levels["Pro"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Image editing requires the Pro plan.",
+        )
+
+    instructions = _resolve_image_edit_instructions(payload.edits)
+    required_credits = _calculate_image_edit_cost(instructions)
+
+    if required_credits > user.credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="You do not have enough credits to perform this action",
+        )
+
+    _process_upload(payload.sourceImage)
+
+    job_id = uuid4().hex
+    edit_payload = _build_image_edit_generation_payload(
+        payload,
+        user=user,
+        required_credits=required_credits,
+        instructions=instructions,
+    )
+    callback_url = _build_callback_url(job_id)
+    target_url = _resolve_generation_url(payload.generationServerUrl)
+    forwarded_payload = _build_generation_payload(edit_payload, user, job_id, callback_url)
+
+    new_credits = _adjust_profile_credits(user.id, -required_credits)
+    if new_credits is None:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="You do not have enough credits to perform this action",
+        )
+
+    job = create_job(
+        job_id,
+        user.id,
+        1,
+        model_id="image-edit",
+        model_name="Image Edit",
+        style=edit_payload.style or None,
+        job_type="image_edit",
+        edit_source=payload.source.model_dump(exclude_none=True),
+        edit_instructions=[instruction.model_dump() for instruction in instructions],
+        edit_credit_cost=required_credits,
+    )
+
+    try:
+        response = await _forward_generation_request(target_url, forwarded_payload)
+    except Exception:
+        try:
+            _adjust_profile_credits(user.id, required_credits)
+        except Exception:
+            logger.exception("Failed to refund credits for user %s after edit dispatch failure", user.id)
+        mark_failed(job, IMAGE_EDIT_START_FAILURE_MESSAGE)
+        raise
+
+    if response.results:
+        for result in response.results:
+            generation_result = (
+                GenerationResultPayload(**result)
+                if isinstance(result, dict)
+                else result
+            )
+            stored_result = _persist_generation_result(job, generation_result)
+            add_result(job, stored_result)
+
+    if response.status == "in_progress":
+        mark_started(job)
+
+    if response.progress is not None or response.completedLooks is not None:
+        update_progress(job, response.progress or job.progress, response.completedLooks)
+
+    has_completed_result = job.completed_looks >= job.total_looks and job.completed_looks > 0
+
+    was_completed = job.status == "completed"
+
+    if response.status == "completed" or (has_completed_result and response.status != "failed"):
+        mark_completed(job)
+        if not was_completed:
+            try:
+                _publish_image_edit_completed_notification(job)
+            except Exception:
+                logger.exception("Failed to publish completion notification for edit job %s", job.id)
+    elif response.status == "failed":
+        error_message = response.errors[0] if response.errors else IMAGE_EDIT_JOB_FAILURE_MESSAGE
+        mark_failed(job, error_message)
+        try:
+            _publish_image_edit_failed_notification(job)
+        except Exception:
+            logger.exception("Failed to publish failure notification for edit job %s", job.id)
+
+    job_state = to_response(job)
+    if response.status and response.status != job_state["status"]:
+        job_state["status"] = response.status
+    if response.progress is not None:
+        job_state["progress"] = response.progress
+    if response.completedLooks is not None:
+        job_state["completedLooks"] = response.completedLooks
+    if response.totalLooks is not None:
+        job_state["totalLooks"] = response.totalLooks
+
+    job_state["remainingCredits"] = new_credits
+    return CreateGenerationResponse(**job_state)
 
 
 @router.post("/", response_model=CreateGenerationResponse)
@@ -749,6 +1119,17 @@ async def receive_generation_event(
         add_result(job, stored_result)
         if event.progress is not None or event.completedLooks is not None:
             update_progress(job, event.progress or job.progress, event.completedLooks)
+        if (
+            job.job_type == "image_edit"
+            and job.completed_looks >= job.total_looks
+            and job.completed_looks > 0
+            and job.status != "completed"
+        ):
+            mark_completed(job)
+            try:
+                _publish_image_edit_completed_notification(job)
+            except Exception:
+                logger.exception("Failed to publish completion notification for edit job %s", job.id)
     elif event.type == "progress":
         if event.progress is None and event.completedLooks is None:
             raise HTTPException(
@@ -758,19 +1139,32 @@ async def receive_generation_event(
         progress = event.progress if event.progress is not None else job.progress
         update_progress(job, progress, event.completedLooks)
     elif event.type == "completed":
+        was_completed = job.status == "completed"
         mark_completed(job)
-        try:
-            _publish_generation_completed_notification(job)
-        except Exception:
-            logger.exception("Failed to publish completion notification for generation job %s", job.id)
+        if not was_completed:
+            try:
+                if job.job_type == "image_edit":
+                    _publish_image_edit_completed_notification(job)
+                else:
+                    _publish_generation_completed_notification(job)
+            except Exception:
+                logger.exception("Failed to publish completion notification for generation job %s", job.id)
     elif event.type == "failed":
         if event.error:
             logger.warning("Generation job %s failed: %s", job.id, event.error[:1000])
         else:
             logger.warning("Generation job %s failed without an error payload", job.id)
-        mark_failed(job, GENERATION_JOB_FAILURE_MESSAGE)
+        failure_message = (
+            IMAGE_EDIT_JOB_FAILURE_MESSAGE
+            if job.job_type == "image_edit"
+            else GENERATION_JOB_FAILURE_MESSAGE
+        )
+        mark_failed(job, failure_message)
         try:
-            _publish_generation_failed_notification(job)
+            if job.job_type == "image_edit":
+                _publish_image_edit_failed_notification(job)
+            else:
+                _publish_generation_failed_notification(job)
         except Exception:
             logger.exception("Failed to publish failure notification for generation job %s", job.id)
     else:  # pragma: no cover - safeguard for future event types
