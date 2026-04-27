@@ -287,6 +287,7 @@ class Model(BaseModel):
     slug: str
     name: str
     PlanTier: str
+    gender: str = "female"
     highlight: str | None = None
     description: str | None = None
     img: str
@@ -322,6 +323,7 @@ class GenerationModelPayload(BaseModel):
     slug: str
     name: str
     planTier: str
+    gender: str | None = None
     highlight: str | None = None
     description: str | None = None
     tags: list[str] = Field(default_factory=list)

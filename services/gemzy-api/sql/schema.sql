@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS models (
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   plan plan_tier NOT NULL DEFAULT 'Free',
+  gender TEXT NOT NULL DEFAULT 'female' CHECK (gender IN ('female', 'male')),
   highlight TEXT,
   description TEXT,
   image_url TEXT NOT NULL,

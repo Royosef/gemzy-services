@@ -51,6 +51,7 @@ create table if not exists public.models (
     slug text unique not null,
     name text not null,
     plan text not null,
+    gender text not null default 'female' check (gender in ('female', 'male')),
     highlight text,
     description text,
     image_url text not null,

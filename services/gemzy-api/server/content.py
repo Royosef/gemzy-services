@@ -1660,6 +1660,7 @@ def _map_models(
                 slug=row.get("slug"),
                 name=row.get("name"),
                 PlanTier=row.get("plan"),
+                gender=row.get("gender") or "female",
                 highlight=row.get("highlight"),
                 description=row.get("description"),
                 img=row.get("image_url"),
@@ -1685,7 +1686,7 @@ def _fetch_models(
     sb = get_client()
     query = (
         sb.table("models")
-        .select("id,slug,name,plan,highlight,description,image_url,tags,spotlight_tag,stage")
+        .select("id,slug,name,plan,gender,highlight,description,image_url,tags,spotlight_tag,stage")
         .order("display_order")
     )
 
