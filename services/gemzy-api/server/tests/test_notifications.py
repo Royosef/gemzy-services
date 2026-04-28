@@ -367,6 +367,14 @@ def test_publish_app_notification_deduplicates_same_generation_entity_key(
             "params": {"jobId": "job-123"},
         },
     )
+    stub.tables["push_notification_logs"].append(
+        {
+            "notification_id": first.id,
+            "status": "accepted",
+            "push_token": "ExpoPushToken[user-1]",
+            "user_id": "user-1",
+        }
+    )
     second = notifications.publish_app_notification(
         category="personal",
         kind="generation_completed",
@@ -384,6 +392,71 @@ def test_publish_app_notification_deduplicates_same_generation_entity_key(
     assert len(stub.operations["app_notifications"]["inserted"]) == 1
     assert len(sent_dispatch_batches) == 1
     assert sent_dispatch_batches[0][0]["message"]["data"]["entityKey"] == "generation:job-123"
+
+
+def test_publish_app_notification_retries_existing_entity_key_without_accepted_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, stub = _build_app(
+        monkeypatch,
+        UserState(id="admin-1", credits=10, isAdmin=True),
+        push_tokens=[
+            {
+                "token": "ExpoPushToken[user-1]",
+                "user_id": "user-1",
+                "platform": "ios",
+                "is_active": True,
+            }
+        ],
+        profiles=[
+            {
+                "id": "user-1",
+                "notification_preferences": {
+                    "gemzyUpdates": True,
+                    "personalUpdates": True,
+                    "email": True,
+                },
+            }
+        ],
+    )
+    sent_dispatch_batches: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(
+        notifications,
+        "_send_expo_push_messages",
+        lambda dispatches, *, notification_id: sent_dispatch_batches.append(
+            [copy.deepcopy(dispatch) for dispatch in dispatches]
+        ),
+    )
+
+    first = notifications.publish_app_notification(
+        category="personal",
+        kind="generation_completed",
+        title="Generation completed",
+        body="Tap to view your new looks",
+        entity_key="generation:job-123",
+        target_user_id="user-1",
+        action={
+            "pathname": "/generating",
+            "params": {"jobId": "job-123"},
+        },
+    )
+    second = notifications.publish_app_notification(
+        category="personal",
+        kind="generation_completed",
+        title="Generation completed",
+        body="Tap to view your new looks",
+        entity_key="generation:job-123",
+        target_user_id="user-1",
+        action={
+            "pathname": "/generating",
+            "params": {"jobId": "job-123"},
+        },
+    )
+
+    assert first.id == second.id
+    assert len(stub.operations["app_notifications"]["inserted"]) == 1
+    assert len(sent_dispatch_batches) == 2
+    assert sent_dispatch_batches[1][0]["message"]["data"]["entityKey"] == "generation:job-123"
 
 
 def test_publish_notification_deactivates_invalid_stored_tokens(

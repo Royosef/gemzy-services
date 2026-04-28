@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
-from uuid import uuid4, UUID
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -83,6 +83,56 @@ def _user_storage_prefix(user_id: str) -> str:
     return user_storage_prefix(user_id)
 
 
+def _draft_collection_id(user_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"gemzy:draft-images:{user_id}"))
+
+
+def _strip_known_collection_bucket_prefix(path: str) -> str:
+    """Remove a leading bucket segment from stored GCS URLs."""
+
+    normalized = path.strip().lstrip("/")
+    known_buckets = {
+        bucket.strip()
+        for bucket in (COLLECTIONS_APP_BUCKET, COLLECTIONS_PUBLIC_BUCKET)
+        if isinstance(bucket, str) and bucket.strip()
+    }
+
+    if not known_buckets:
+        return normalized
+
+    bucket, separator, remainder = normalized.partition("/")
+    if separator and bucket in known_buckets:
+        return remainder
+
+    return normalized
+
+
+def _known_collection_buckets() -> set[str]:
+    return {
+        bucket.strip().lower()
+        for bucket in (COLLECTIONS_APP_BUCKET, COLLECTIONS_PUBLIC_BUCKET)
+        if isinstance(bucket, str) and bucket.strip()
+    }
+
+
+def _is_collection_storage_url(uri: str) -> bool:
+    parsed = urlparse(uri)
+    host = parsed.netloc.lower()
+    known_buckets = _known_collection_buckets()
+
+    if not known_buckets:
+        return False
+
+    if host in known_buckets:
+        return True
+
+    if host in {"storage.googleapis.com", "storage.cloud.google.com"}:
+        first_segment = parsed.path.lstrip("/").split("/", 1)[0].lower()
+        return first_segment in known_buckets
+
+    return False
+
+
 def _maybe_get_collections_bucket():
     """
     Return the collections bucket if configured, using a simple module-level cache.
@@ -134,6 +184,8 @@ def _normalize_storage_path(value: str | None) -> str | None:
         trimmed = parsed.path.lstrip("/")
     else:
         trimmed = trimmed.lstrip("/")
+
+    trimmed = _strip_known_collection_bucket_prefix(trimmed)
 
     return trimmed or None
 
@@ -285,7 +337,9 @@ def _resolve_collection_image_variants(
     if not candidate:
         return None, None
 
-    if _has_public_scheme(candidate):
+    if _has_public_scheme(candidate) and not (
+        include_signed and _is_collection_storage_url(candidate)
+    ):
         return candidate, candidate
 
     normalized = _normalize_storage_path(candidate)
@@ -479,7 +533,7 @@ def _map_collections(
         preview_uri, resolved_uri = _resolve_collection_image_variants(
             item.get("image_url"),
             storage_path,
-            include_signed=include_items,
+            include_signed=True,
         )
 
         model_id = _coerce_str(item.get("model_id"))
@@ -526,7 +580,7 @@ def _map_collections(
         cover_preview, cover_url = _resolve_collection_image_variants(
             row.get("cover_url"),
             None,
-            include_signed=include_items,
+            include_signed=True,
         )
 
         lead_model_payload: dict[str, Any] | None = None
@@ -989,6 +1043,7 @@ def ensure_unsaved_collection(user_id: str) -> str:
     """Ensure the user has a Draft/Unsaved collection and return its ID."""
 
     sb = get_client()
+    draft_id = _draft_collection_id(user_id)
 
     # Try existing
     existing = (
@@ -996,6 +1051,7 @@ def ensure_unsaved_collection(user_id: str) -> str:
         .select("id")
         .eq("user_id", user_id)
         .eq("name", DEFAULT_UNSAVED_COLLECTION_NAME)
+        .order("created_at", desc=False)
         .limit(1)
         .execute()
     ).data or []
@@ -1011,6 +1067,7 @@ def ensure_unsaved_collection(user_id: str) -> str:
             .select("id,name")
             .eq("user_id", user_id)
             .in_("name", list(LEGACY_UNSAVED_COLLECTION_NAMES))
+            .order("created_at", desc=False)
             .limit(1)
             .execute()
         ).data or []
@@ -1031,20 +1088,49 @@ def ensure_unsaved_collection(user_id: str) -> str:
                         pass
                 return cid
 
-    # Create
-    created_resp = (
+    deterministic = (
         sb.table("collections")
-        .insert(
-            {
-                "user_id": user_id,
-                "name": DEFAULT_UNSAVED_COLLECTION_NAME,
-                "liked": False,
-            },
-            returning="representation",
-        )
+        .select("id,name")
+        .eq("user_id", user_id)
+        .eq("id", draft_id)
+        .limit(1)
         .execute()
-    )
-    created = created_resp.data or []
+    ).data or []
+    if deterministic:
+        cid = _coerce_str(deterministic[0].get("id"))
+        if cid:
+            current_name = _coerce_str(deterministic[0].get("name"))
+            if current_name != DEFAULT_UNSAVED_COLLECTION_NAME:
+                try:
+                    (
+                        sb.table("collections")
+                        .update({"name": DEFAULT_UNSAVED_COLLECTION_NAME})
+                        .eq("id", cid)
+                        .eq("user_id", user_id)
+                        .execute()
+                    )
+                except Exception:
+                    pass
+            return cid
+
+    # Create
+    try:
+        created_resp = (
+            sb.table("collections")
+            .insert(
+                {
+                    "id": draft_id,
+                    "user_id": user_id,
+                    "name": DEFAULT_UNSAVED_COLLECTION_NAME,
+                    "liked": False,
+                },
+                returning="representation",
+            )
+            .execute()
+        )
+        created = created_resp.data or []
+    except Exception:
+        created = []
     if created:
         cid = _coerce_str(created[0].get("id"))
         if cid:
@@ -1055,10 +1141,20 @@ def ensure_unsaved_collection(user_id: str) -> str:
         sb.table("collections")
         .select("id")
         .eq("user_id", user_id)
-        .eq("name", DEFAULT_UNSAVED_COLLECTION_NAME)
+        .eq("id", draft_id)
         .limit(1)
         .execute()
     ).data or []
+    if not fallback:
+        fallback = (
+            sb.table("collections")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("name", DEFAULT_UNSAVED_COLLECTION_NAME)
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        ).data or []
     if fallback:
         cid = _coerce_str(fallback[0].get("id"))
         if cid:

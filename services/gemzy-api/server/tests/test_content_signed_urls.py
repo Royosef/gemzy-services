@@ -66,6 +66,101 @@ class _StubClient:
         return _StubTable(self._rows)
 
 
+class _DraftResponse:
+    def __init__(self, data: list[dict[str, Any]]) -> None:
+        self.data = data
+
+
+class _DraftCollectionsTable:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        inserted: list[dict[str, Any]],
+        *,
+        fail_insert: bool = False,
+    ) -> None:
+        self._rows = rows
+        self._inserted = inserted
+        self._filters: list[tuple[str, Any]] = []
+        self._insert_payload: dict[str, Any] | None = None
+        self._update_payload: dict[str, Any] | None = None
+        self._fail_insert = fail_insert
+
+    def select(self, *_args: Any, **_kwargs: Any) -> "_DraftCollectionsTable":
+        return self
+
+    def eq(self, key: str, value: Any) -> "_DraftCollectionsTable":
+        self._filters.append((key, value))
+        return self
+
+    def in_(self, key: str, values: list[Any]) -> "_DraftCollectionsTable":
+        self._filters.append((key, set(values)))
+        return self
+
+    def order(self, *_args: Any, **_kwargs: Any) -> "_DraftCollectionsTable":
+        return self
+
+    def limit(self, *_args: Any, **_kwargs: Any) -> "_DraftCollectionsTable":
+        return self
+
+    def insert(
+        self,
+        payload: dict[str, Any],
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> "_DraftCollectionsTable":
+        self._insert_payload = payload
+        return self
+
+    def update(self, payload: dict[str, Any]) -> "_DraftCollectionsTable":
+        self._update_payload = payload
+        return self
+
+    def execute(self) -> _DraftResponse:
+        if self._insert_payload is not None:
+            if self._fail_insert:
+                self._rows.append(self._insert_payload)
+                raise RuntimeError("duplicate key")
+            self._inserted.append(self._insert_payload)
+            self._rows.append(self._insert_payload)
+            return _DraftResponse([self._insert_payload])
+
+        rows = self._rows
+        for key, value in self._filters:
+            if isinstance(value, set):
+                rows = [row for row in rows if row.get(key) in value]
+            else:
+                rows = [row for row in rows if row.get(key) == value]
+
+        if self._update_payload is not None:
+            for row in rows:
+                row.update(self._update_payload)
+            return _DraftResponse(rows)
+
+        return _DraftResponse(rows[:1])
+
+
+class _DraftClient:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        inserted: list[dict[str, Any]],
+        *,
+        fail_insert: bool = False,
+    ) -> None:
+        self._rows = rows
+        self._inserted = inserted
+        self._fail_insert = fail_insert
+
+    def table(self, name: str) -> _DraftCollectionsTable:
+        assert name == "collections"
+        return _DraftCollectionsTable(
+            self._rows,
+            self._inserted,
+            fail_insert=self._fail_insert,
+        )
+
+
 @pytest.fixture
 def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     api = FastAPI()
@@ -134,3 +229,84 @@ def test_generate_signed_url_rejects_other_prefix(monkeypatch: pytest.MonkeyPatc
     client = TestClient(app)
     response = client.get("/collections/items/user-123/items/photo.png/signed-url")
     assert response.status_code == 404
+
+
+def test_normalize_storage_path_strips_known_bucket_from_gcs_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(content, "COLLECTIONS_APP_BUCKET", "app.gemzy.co")
+    monkeypatch.setattr(content, "COLLECTIONS_PUBLIC_BUCKET", "public.gemzy.co")
+
+    normalized = content._normalize_storage_path(
+        "https://storage.googleapis.com/app.gemzy.co/user-123/items/photo.png?X-Goog-Signature=abc"
+    )
+
+    assert normalized == "user-123/items/photo.png"
+
+
+def test_resolve_collection_image_variants_resigns_gcs_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(content, "COLLECTIONS_APP_BUCKET", "app.gemzy.co")
+    monkeypatch.setattr(content, "COLLECTIONS_PUBLIC_BUCKET", "public.gemzy.co")
+    monkeypatch.setattr(
+        content,
+        "_maybe_get_collections_bucket",
+        lambda: _StubBucket("user-123/items/photo.png"),
+    )
+    monkeypatch.setattr(
+        content,
+        "generate_signed_read_url_v4",
+        lambda *_args, **_kwargs: "https://signed.example/object.png",
+    )
+
+    preview, full = content._resolve_collection_image_variants(
+        "https://storage.googleapis.com/app.gemzy.co/user-123/items/photo.png?X-Goog-Signature=old",
+        None,
+        include_signed=True,
+    )
+
+    assert preview == "https://signed.example/object.png"
+    assert full == "https://signed.example/object.png"
+
+
+def test_ensure_unsaved_collection_creates_deterministic_draft_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: list[dict[str, Any]] = []
+    inserted: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        content,
+        "get_client",
+        lambda: _DraftClient(rows, inserted),
+    )
+
+    draft_id = content.ensure_unsaved_collection("user-123")
+
+    assert draft_id == content._draft_collection_id("user-123")
+    assert inserted == [
+        {
+            "id": draft_id,
+            "user_id": "user-123",
+            "name": "Draft Images",
+            "liked": False,
+        }
+    ]
+
+
+def test_ensure_unsaved_collection_recovers_from_concurrent_draft_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draft_id = content._draft_collection_id("user-123")
+    rows: list[dict[str, Any]] = []
+    inserted: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        content,
+        "get_client",
+        lambda: _DraftClient(rows, inserted, fail_insert=True),
+    )
+
+    resolved_id = content.ensure_unsaved_collection("user-123")
+
+    assert resolved_id == draft_id
+    assert inserted == []

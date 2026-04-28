@@ -300,6 +300,63 @@ def _find_notification_by_entity_key(entity_key: str) -> dict[str, Any] | None:
     return None
 
 
+def _accepted_push_targets_for_notification(notification_id: str | None) -> set[tuple[str, str]]:
+    if not notification_id:
+        return set()
+
+    response = (
+        get_client()
+        .table("push_notification_logs")
+        .select("user_id,push_token")
+        .eq("notification_id", notification_id)
+        .eq("status", "accepted")
+        .execute()
+    )
+    return {
+        (str(row["push_token"]), str(row["user_id"]))
+        for row in response.data or []
+        if isinstance(row, dict)
+        and isinstance(row.get("push_token"), str)
+        and isinstance(row.get("user_id"), str)
+    }
+
+
+def _dispatch_notification_pushes(
+    notification: dict[str, Any],
+    *,
+    category: str,
+    target_user_id: str | None,
+    only_missing_accepted_targets: bool = False,
+) -> int:
+    notification_id = notification.get("id") if isinstance(notification.get("id"), str) else None
+    targets = _select_push_targets_for_notification(
+        category,
+        target_user_id=target_user_id if category == "personal" else None,
+    )
+
+    if only_missing_accepted_targets:
+        accepted_targets = _accepted_push_targets_for_notification(notification_id)
+        if accepted_targets:
+            targets = [
+                target
+                for target in targets
+                if (target["token"], target["user_id"]) not in accepted_targets
+            ]
+
+    logger.info(
+        "Notification id=%s selected %s push targets",
+        notification_id,
+        len(targets),
+    )
+    if targets:
+        _send_expo_push_messages(
+            _build_push_dispatches(targets, notification),
+            notification_id=notification_id,
+        )
+
+    return len(targets)
+
+
 def _build_push_dispatches(
     targets: list[PushTarget],
     notification: dict[str, Any],
@@ -517,9 +574,15 @@ def publish_app_notification(
     existing = _find_notification_by_entity_key(resolved_entity_key)
     if existing is not None:
         logger.info(
-            "Skipping publish for existing notification entity_key=%s existing_id=%s",
+            "Notification already exists for entity_key=%s existing_id=%s; checking for missing push delivery",
             resolved_entity_key,
             existing.get("id"),
+        )
+        _dispatch_notification_pushes(
+            existing,
+            category=normalized_category,
+            target_user_id=target_user_id,
+            only_missing_accepted_targets=True,
         )
         return _normalize_notification(existing)
 
@@ -554,20 +617,11 @@ def publish_app_notification(
         resolved_entity_key,
     )
     get_client().table("app_notifications").insert(payload).execute()
-    targets = _select_push_targets_for_notification(
-        normalized_category,
-        target_user_id=target_user_id if normalized_category == "personal" else None,
+    _dispatch_notification_pushes(
+        payload,
+        category=normalized_category,
+        target_user_id=target_user_id,
     )
-    logger.info(
-        "Notification id=%s selected %s push targets",
-        notification_id,
-        len(targets),
-    )
-    if targets:
-        _send_expo_push_messages(
-            _build_push_dispatches(targets, payload),
-            notification_id=notification_id,
-        )
 
     return _normalize_notification(payload)
 
