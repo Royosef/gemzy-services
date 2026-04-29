@@ -113,7 +113,7 @@ IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
     "zoom_out": {
         "label": "Zoom out for full context",
         "category": "framing",
-        "prompt": "Widen the frame by approximately 15% to reveal more of the scene and context around the jewelry. The jewelry remains sharp and fully visible within the expanded frame.",
+        "prompt": "Pull the camera back so the jewelry and subject appear approximately 15% smaller within the frame — more of the existing scene, surface, and surroundings become visible around them. The jewelry remains sharp and fully visible. Do not invent new content beyond the original frame edges; only redistribute the existing scene composition so the subject occupies less of the frame than before.",
     },
     "camera_low_angle": {
         "label": "Low angle",
