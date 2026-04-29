@@ -64,6 +64,7 @@ security = HTTPBearer()
 nonce_store: dict[str, str] = {}
 logger = logging.getLogger(__name__)
 DEFAULT_STYLE_TRIAL_REMAINING_USES = 3
+DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
 
 TEST_LOGIN_USER_ID = "286b4672-8f6e-44cc-945f-7a3d113c50b2"
 TEST_LOGIN_EMAIL = "testgemzy@gemzy.co"
@@ -363,7 +364,7 @@ def _user_profile(user_id: str, *, client=None) -> dict:
         resp = (
             sb.table("profiles")
             .select(
-                "id,name,plan,credits,purchased_credits,avatar_url,notification_preferences,is_admin,deactivated_at,retention_offer_used,retention_offer_used_at,rc_last_event_ms,subscription_expires_at,onboarding_completed,next_credit_reset_at,on_model_style_trials,pure_jewelry_style_trials"
+                "id,name,plan,credits,purchased_credits,edit_mode_trial_edits_remaining,avatar_url,notification_preferences,is_admin,deactivated_at,retention_offer_used,retention_offer_used_at,rc_last_event_ms,subscription_expires_at,onboarding_completed,next_credit_reset_at,on_model_style_trials,pure_jewelry_style_trials"
             )
             .eq("id", user_id)
             .limit(1)
@@ -432,6 +433,9 @@ def _build_user_state(
         "onModel": _normalize_style_trial_state(profile.get("on_model_style_trials")),
         "pureJewelry": _normalize_style_trial_state(profile.get("pure_jewelry_style_trials")),
     }
+    edit_mode_trial_edits_remaining = _normalize_edit_mode_trial_edits_remaining(
+        profile.get("edit_mode_trial_edits_remaining")
+    )
 
     return UserState(
         id=user_id,
@@ -450,6 +454,7 @@ def _build_user_state(
         retentionOfferUsedAt=profile.get("retention_offer_used_at"),
         onboardingCompleted=bool(profile.get("onboarding_completed")),
         styleTrials=style_trials,
+        editModeTrialEditsRemaining=edit_mode_trial_edits_remaining,
     )
 
 
@@ -1038,6 +1043,14 @@ def _default_style_trial_state() -> dict[str, object]:
         "pendingSelectionKeys": [],
         "remainingUses": DEFAULT_STYLE_TRIAL_REMAINING_USES,
     }
+
+
+def _normalize_edit_mode_trial_edits_remaining(value: object | None) -> int:
+    try:
+        remaining = int(value) if value is not None else DEFAULT_EDIT_MODE_TRIAL_EDITS
+    except (TypeError, ValueError):
+        remaining = DEFAULT_EDIT_MODE_TRIAL_EDITS
+    return max(0, min(DEFAULT_EDIT_MODE_TRIAL_EDITS, remaining))
 
 
 def _normalize_style_trial_state(value: object | None) -> dict[str, object]:

@@ -168,6 +168,7 @@ def test_build_user_state_exposes_style_trials_defaults():
         "onModel": {"pendingSelectionKeys": [], "remainingUses": 3},
         "pureJewelry": {"pendingSelectionKeys": [], "remainingUses": 3},
     }
+    assert state.editModeTrialEditsRemaining == 2
 
 
 def test_normalize_style_trial_state_sanitizes_payload():

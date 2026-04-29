@@ -34,6 +34,8 @@ class Settings:
     gcs_credentials: Optional[Dict[str, Any]]
     worker_concurrency: int
     callback_timeout: float
+    callback_max_attempts: int
+    callback_retry_delay: float
     result_poll_interval: float
     output_dir: str
     google_gemini_api_key: Optional[str]
@@ -94,6 +96,8 @@ class Settings:
             gcs_credentials=gcs_credentials,
             worker_concurrency=max(1, int(os.getenv("GENERATION_WORKER_CONCURRENCY", "1"))),
             callback_timeout=float(os.getenv("GENERATION_CALLBACK_TIMEOUT", "15")),
+            callback_max_attempts=max(1, int(os.getenv("GENERATION_CALLBACK_MAX_ATTEMPTS", "5"))),
+            callback_retry_delay=max(0.0, float(os.getenv("GENERATION_CALLBACK_RETRY_DELAY", "1"))),
             result_poll_interval=float(os.getenv("GENERATION_RESULT_POLL", "0.5")),
             output_dir=os.getenv("GENERATION_OUTPUT_DIR", "./outputs"),
             google_gemini_api_key=google_gemini_api_key,

@@ -74,9 +74,11 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
         product_images: List[bytes] = [decode_upload_image(upload.base64) for upload in request.uploads]
         product_image_mime_types = [upload.mimeType or "image/png" for upload in request.uploads]
         
+        task_type = request.style.get("task_type", "")
         is_image_edit = (
             request.model.slug == "image-edit"
-            or request.style.get("task_type") == "image_edit"
+            or task_type == "image_edit"
+            or task_type.endswith("/edited")
         )
 
         # Pure Jewelry and edit jobs use uploaded imagery as their reference,

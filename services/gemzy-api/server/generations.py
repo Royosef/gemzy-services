@@ -27,6 +27,7 @@ from .content import (
     COLLECTIONS_CACHE_CONTROL,
     COLLECTIONS_OWNER_METADATA_KEY,
     _refresh_collection_cover,
+    _ensure_collections_belong,
     ensure_unsaved_collection,
     _get_collections_bucket,
     _normalize_storage_path,
@@ -54,6 +55,8 @@ from .schemas import (
     GenerationJobEvent,
     GenerationResultPayload,
     GenerationUploadPayload,
+    ImageEditFeedbackRequest,
+    ImageEditFeedbackResponse,
     ImageEditInstructionPayload,
     ItemPayload,
     UserState,
@@ -74,8 +77,11 @@ GENERATION_START_FAILURE_MESSAGE = "Unable to start generation right now. Please
 GENERATION_JOB_FAILURE_MESSAGE = "Generation failed. Please try again."
 IMAGE_EDIT_START_FAILURE_MESSAGE = "Unable to start image edit right now. Please try again."
 IMAGE_EDIT_JOB_FAILURE_MESSAGE = "Image edit failed. Please try again."
+DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
 IMAGE_EDIT_BASE_COST = 8
 IMAGE_EDIT_UPSCALE_COST = 14
+BASE_TASK_TYPE_ON_MODEL = "on-model"
+BASE_TASK_TYPE_PURE_JEWELRY = "pure-jewelry"
 
 IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
     "jewelry_smaller": {
@@ -159,6 +165,84 @@ IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
         "prompt": "Sharpen fine details on the jewelry and image while avoiding artifacts.",
     },
 }
+
+
+def _style_with_task_type(
+    style: dict[str, str] | None,
+    task_type: str,
+) -> dict[str, str]:
+    next_style = dict(style or {})
+    next_style["task_type"] = task_type
+    return next_style
+
+
+def _base_task_type_from_style(style: dict[str, str] | None) -> str | None:
+    task_type = (style or {}).get("task_type", "").strip()
+    if task_type.startswith(BASE_TASK_TYPE_PURE_JEWELRY):
+        return BASE_TASK_TYPE_PURE_JEWELRY
+    if task_type.startswith(BASE_TASK_TYPE_ON_MODEL):
+        return BASE_TASK_TYPE_ON_MODEL
+    return None
+
+
+def _generation_task_type(payload: CreateGenerationPayload) -> str:
+    from_style = _base_task_type_from_style(payload.style)
+    if from_style:
+        return from_style
+    return (
+        BASE_TASK_TYPE_PURE_JEWELRY
+        if payload.model.slug == "pure-jewelry"
+        else BASE_TASK_TYPE_ON_MODEL
+    )
+
+
+def _image_edit_source_base_task_type(payload: CreateImageEditPayload) -> str:
+    from_style = _base_task_type_from_style(payload.source.style)
+    if from_style:
+        return from_style
+    if (
+        payload.source.modelSlug == "pure-jewelry"
+        or payload.source.modelName == "Pure Jewelry"
+    ):
+        return BASE_TASK_TYPE_PURE_JEWELRY
+    return BASE_TASK_TYPE_ON_MODEL
+
+
+def _image_edit_task_type(payload: CreateImageEditPayload) -> str:
+    return f"{_image_edit_source_base_task_type(payload)}/edited"
+
+
+def _image_edit_model_name(payload: CreateImageEditPayload) -> str:
+    if payload.source.modelName:
+        return payload.source.modelName
+    return (
+        "Pure Jewelry"
+        if _image_edit_source_base_task_type(payload) == BASE_TASK_TYPE_PURE_JEWELRY
+        else "On Model"
+    )
+
+
+def _image_edit_model_id(payload: CreateImageEditPayload) -> str | None:
+    if payload.source.modelId:
+        return payload.source.modelId
+    if _image_edit_source_base_task_type(payload) == BASE_TASK_TYPE_PURE_JEWELRY:
+        return "pure-jewelry-model"
+    return None
+
+
+def _dims_payload(dims: Any) -> dict[str, int] | None:
+    if dims is None:
+        return None
+    if hasattr(dims, "model_dump"):
+        data = dims.model_dump()
+    elif isinstance(dims, dict):
+        data = dims
+    else:
+        return None
+    try:
+        return {"w": int(data["w"]), "h": int(data["h"])}
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _publish_generation_completed_notification(job: GenerationJob) -> None:
@@ -248,6 +332,87 @@ def _normalize_credit_value(value: object | None) -> int:
         return int(str(value))
     except (TypeError, ValueError):  # pragma: no cover - defensive
         return 0
+
+
+def _normalize_edit_mode_trial_edits_remaining(value: object | None) -> int:
+    try:
+        remaining = int(value) if value is not None else DEFAULT_EDIT_MODE_TRIAL_EDITS
+    except (TypeError, ValueError):
+        remaining = DEFAULT_EDIT_MODE_TRIAL_EDITS
+    return max(0, min(DEFAULT_EDIT_MODE_TRIAL_EDITS, remaining))
+
+
+def _adjust_edit_mode_trial_edits(
+    user_id: str,
+    delta: int,
+    *,
+    max_attempts: int = 5,
+) -> int | None:
+    """Atomically consume or restore an Edit Mode trial use."""
+
+    if delta == 0:
+        resp = (
+            get_client()
+            .table("profiles")
+            .select("edit_mode_trial_edits_remaining")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return None
+        return _normalize_edit_mode_trial_edits_remaining(
+            rows[0].get("edit_mode_trial_edits_remaining")
+        )
+
+    sb = get_client()
+    for _ in range(max_attempts):
+        resp = (
+            sb.table("profiles")
+            .select("edit_mode_trial_edits_remaining")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to load your Edit Mode trial balance right now.",
+            )
+
+        current = _normalize_edit_mode_trial_edits_remaining(
+            rows[0].get("edit_mode_trial_edits_remaining")
+        )
+        if delta < 0 and current <= 0:
+            return None
+        next_remaining = max(
+            0,
+            min(DEFAULT_EDIT_MODE_TRIAL_EDITS, current + delta),
+        )
+        if next_remaining == current:
+            return current
+
+        update_resp = (
+            sb.table("profiles")
+            .update({"edit_mode_trial_edits_remaining": next_remaining}, count="exact")
+            .eq("id", user_id)
+            .eq("edit_mode_trial_edits_remaining", current)
+            .execute()
+        )
+        if (update_resp.count or 0) == 1:
+            return next_remaining
+
+    logger.warning(
+        "Failed to update Edit Mode trial balance for user %s after %s attempts",
+        user_id,
+        max_attempts,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Your Edit Mode trial balance changed. Please try again.",
+    )
 
 
 def _adjust_profile_credits(user_id: str, delta: int, *, max_attempts: int = 5) -> int | None:
@@ -398,8 +563,47 @@ def _is_missing_model_columns(error: APIError) -> bool:
     message = (getattr(error, "message", None) or str(error)).lower()
     return "model" in message and "column" in message
 
+
+def _build_result_metadata_payload(
+    job: GenerationJob,
+    *,
+    image_size: int | None = None,
+    content_type: str = "image/png",
+) -> dict[str, Any]:
+    metadata_payload: dict[str, Any] = {
+        "contentType": content_type,
+        "source": "image_edit" if job.job_type == "image_edit" else "generation",
+        "jobId": job.id,
+        "durationMs": int(
+            (datetime.utcnow() - job.created_at).total_seconds() * 1000
+        ),
+    }
+    if image_size is not None:
+        metadata_payload["size"] = image_size
+    if job.model_id:
+        metadata_payload["modelId"] = job.model_id
+    if job.model_name:
+        metadata_payload["modelName"] = job.model_name
+    if job.aspect:
+        metadata_payload["aspect"] = job.aspect
+    if job.dims:
+        metadata_payload["dims"] = job.dims
+    if job.quality:
+        metadata_payload["quality"] = job.quality
+    if job.style:
+        metadata_payload["style"] = job.style
+        task_type = job.style.get("task_type")
+        if task_type:
+            metadata_payload["taskType"] = task_type
+    if job.job_type == "image_edit":
+        metadata_payload["editSource"] = job.edit_source
+        metadata_payload["editInstructions"] = job.edit_instructions
+    return metadata_payload
+
+
 MAX_IMAGE_DIMENSION = 2048
 MAX_BASE64_SIZE_CHARS = 20 * 1024 * 1024  # ~15MB base64 encoded
+
 
 def _process_upload(upload: GenerationUploadPayload) -> None:
     """Validate and intelligently resize over-sized generation uploads."""
@@ -410,7 +614,10 @@ def _process_upload(upload: GenerationUploadPayload) -> None:
     if len(upload.base64) > MAX_BASE64_SIZE_CHARS:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Image '{upload.name or 'upload'}' is too large. Please upload an image smaller than 15MB."
+            detail=(
+                f"Image '{upload.name or 'upload'}' is too large. "
+                "Please upload an image smaller than 15MB."
+            ),
         )
 
     # 2. Extract base64 payload
@@ -486,6 +693,15 @@ def _persist_generation_result(
             metadata["modelId"] = job.model_id
         if job.model_name:
             metadata["modelName"] = job.model_name
+        if job.aspect:
+            metadata["aspect"] = job.aspect
+        if job.quality:
+            metadata["quality"] = job.quality
+        if job.style:
+            task_type = job.style.get("task_type")
+            if task_type:
+                metadata["taskType"] = task_type
+            metadata["style"] = json.dumps(job.style)
         if job.job_type == "image_edit":
             metadata["editSource"] = json.dumps(job.edit_source or {})
             metadata["editInstructions"] = json.dumps(job.edit_instructions or [])
@@ -524,22 +740,10 @@ def _persist_generation_result(
             job.unsaved_collection_id = collection_id
 
         if collection_id:
-            metadata_payload: dict[str, Any] = {
-                "contentType": "image/png",
-                "size": len(image_bytes),
-                "source": "image_edit" if job.job_type == "image_edit" else "generation",
-                "jobId": job.id,
-                "durationMs": int((datetime.utcnow() - job.created_at).total_seconds() * 1000),
-            }
-            if job.model_id:
-                metadata_payload["modelId"] = job.model_id
-            if job.model_name:
-                metadata_payload["modelName"] = job.model_name
-            if job.style:
-                metadata_payload["style"] = job.style
-            if job.job_type == "image_edit":
-                metadata_payload["editSource"] = job.edit_source
-                metadata_payload["editInstructions"] = job.edit_instructions
+            metadata_payload = _build_result_metadata_payload(
+                job,
+                image_size=len(image_bytes),
+            )
 
             record_payload: dict[str, Any] = {
                 "collection_id": collection_id,
@@ -620,6 +824,7 @@ def _persist_generation_result(
         modelId=job.model_id,
         modelName=job.model_name,
         createdAt=created_iso,
+        metadata=_build_result_metadata_payload(job, image_size=len(image_bytes)),
     )
 
 
@@ -778,7 +983,9 @@ def _build_image_edit_prompt(
 
     lines.append("Requested edits:")
     for index, instruction in enumerate(instructions, start=1):
-        lines.append(f"{index}. {instruction.label}: {instruction.prompt or instruction.label}")
+        lines.append(
+            f"{index}. {instruction.label}: {instruction.prompt or instruction.label}"
+        )
     return "\n".join(lines)
 
 
@@ -789,6 +996,21 @@ def _build_image_edit_generation_payload(
     required_credits: int,
     instructions: list[ImageEditInstructionPayload],
 ) -> CreateGenerationPayload:
+    source_base_task_type = _image_edit_source_base_task_type(payload)
+    edit_style = _style_with_task_type(
+        payload.source.style, _image_edit_task_type(payload)
+    )
+    edit_style["source_task_type"] = source_base_task_type
+    edit_style["edit_ids"] = ",".join(instruction.id for instruction in instructions)
+    edit_style["edit_labels"] = ",".join(
+        instruction.label for instruction in instructions
+    )
+    edit_style["edit_categories"] = ",".join(
+        instruction.category for instruction in instructions
+    )
+    if payload.source.modelSlug:
+        edit_style["source_model_slug"] = payload.source.modelSlug
+
     return CreateGenerationPayload(
         generationServerUrl=payload.generationServerUrl,
         uploads=[payload.sourceImage],
@@ -801,18 +1023,14 @@ def _build_image_edit_generation_payload(
             )
         ],
         model=GenerationModelPayload(
-            id="image-edit",
+            id=_image_edit_model_id(payload) or "image-edit",
             slug="image-edit",
-            name="Image Edit",
+            name=_image_edit_model_name(payload),
             planTier="Pro",
             tags=[],
             imageUri=payload.source.url or payload.source.previewUrl,
         ),
-        style={
-            "task_type": "image_edit",
-            "edit_ids": ",".join(instruction.id for instruction in instructions),
-            "source_model_slug": payload.source.modelSlug or "",
-        },
+        style=edit_style,
         mode="ADVANCED",
         aspect=payload.aspect,
         dims=payload.dims,
@@ -822,6 +1040,18 @@ def _build_image_edit_generation_payload(
         creditsNeeded=required_credits,
         promptOverrides=[_build_image_edit_prompt(payload, instructions)],
     )
+
+
+def _resolve_image_edit_target_collection_id(
+    payload: CreateImageEditPayload,
+    user: UserState,
+) -> str | None:
+    collection_id = (payload.source.collectionId or "").strip()
+    if not collection_id:
+        return None
+
+    _ensure_collections_belong(user.id, [collection_id])
+    return collection_id
 
 
 @router.post("/edits", response_model=CreateGenerationResponse)
@@ -845,8 +1075,22 @@ async def create_image_edit(
 
     instructions = _resolve_image_edit_instructions(payload.edits)
     required_credits = _calculate_image_edit_cost(instructions)
+    target_collection_id = _resolve_image_edit_target_collection_id(payload, user)
 
-    if required_credits > user.credits:
+    edit_trial_applied = False
+    edit_trial_remaining = _normalize_edit_mode_trial_edits_remaining(
+        user.editModeTrialEditsRemaining
+    )
+    new_trial_remaining: int | None = None
+    new_credits = user.credits
+
+    if edit_trial_remaining > 0:
+        consumed_trial_remaining = _adjust_edit_mode_trial_edits(user.id, -1)
+        if consumed_trial_remaining is not None:
+            edit_trial_applied = True
+            new_trial_remaining = consumed_trial_remaining
+
+    if not edit_trial_applied and required_credits > user.credits:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="You do not have enough credits to perform this action",
@@ -865,33 +1109,47 @@ async def create_image_edit(
     target_url = _resolve_generation_url(payload.generationServerUrl)
     forwarded_payload = _build_generation_payload(edit_payload, user, job_id, callback_url)
 
-    new_credits = _adjust_profile_credits(user.id, -required_credits)
-    if new_credits is None:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="You do not have enough credits to perform this action",
-        )
+    if not edit_trial_applied:
+        adjusted_credits = _adjust_profile_credits(user.id, -required_credits)
+        if adjusted_credits is None:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="You do not have enough credits to perform this action",
+            )
+        new_credits = adjusted_credits
 
     job = create_job(
         job_id,
         user.id,
         1,
-        model_id="image-edit",
-        model_name="Image Edit",
+        model_id=_image_edit_model_id(payload),
+        model_name=_image_edit_model_name(payload),
         style=edit_payload.style or None,
+        aspect=edit_payload.aspect,
+        dims=_dims_payload(edit_payload.dims),
+        quality=edit_payload.quality,
+        unsaved_collection_id=target_collection_id,
         job_type="image_edit",
         edit_source=payload.source.model_dump(exclude_none=True),
         edit_instructions=[instruction.model_dump() for instruction in instructions],
-        edit_credit_cost=required_credits,
+        edit_credit_cost=0 if edit_trial_applied else required_credits,
+        edit_trial_applied=edit_trial_applied,
+        edit_mode_trial_edits_remaining=new_trial_remaining,
     )
 
     try:
         response = await _forward_generation_request(target_url, forwarded_payload)
     except Exception:
         try:
-            _adjust_profile_credits(user.id, required_credits)
+            if edit_trial_applied:
+                _adjust_edit_mode_trial_edits(user.id, 1)
+            else:
+                _adjust_profile_credits(user.id, required_credits)
         except Exception:
-            logger.exception("Failed to refund credits for user %s after edit dispatch failure", user.id)
+            logger.exception(
+                "Failed to refund edit cost for user %s after edit dispatch failure",
+                user.id,
+            )
         mark_failed(job, IMAGE_EDIT_START_FAILURE_MESSAGE)
         raise
 
@@ -941,7 +1199,51 @@ async def create_image_edit(
         job_state["totalLooks"] = response.totalLooks
 
     job_state["remainingCredits"] = new_credits
+    job_state["editTrialApplied"] = edit_trial_applied
+    job_state["editModeTrialEditsRemaining"] = new_trial_remaining
     return CreateGenerationResponse(**job_state)
+
+
+@router.post("/edits/{edit_job_id}/feedback", response_model=ImageEditFeedbackResponse)
+def submit_image_edit_feedback(
+    edit_job_id: str,
+    payload: ImageEditFeedbackRequest,
+    user: UserState = Depends(get_current_user),
+) -> ImageEditFeedbackResponse:
+    """Persist beta feedback for a completed image edit."""
+
+    job = get_job(edit_job_id)
+    if job is not None and job.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Edit job not found")
+
+    comment = payload.comment.strip() if isinstance(payload.comment, str) else None
+    if comment == "":
+        comment = None
+    if comment and len(comment) > 2000:
+        comment = comment[:2000]
+
+    feedback_id = str(uuid4())
+    created_at = datetime.utcnow().isoformat() + "Z"
+    row = {
+        "id": feedback_id,
+        "user_id": user.id,
+        "edit_job_id": edit_job_id,
+        "source_key": payload.sourceKey,
+        "rating": payload.rating,
+        "comment": comment,
+        "edit_option_ids": [
+            item for item in payload.editOptionIds if isinstance(item, str) and item
+        ],
+        "edit_labels": [
+            item for item in payload.editLabels if isinstance(item, str) and item
+        ],
+        "metadata": payload.metadata if isinstance(payload.metadata, dict) else {},
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+    get_client().table("image_edit_feedback").insert(row).execute()
+    return ImageEditFeedbackResponse(id=feedback_id, createdAt=created_at)
 
 
 @router.post("/", response_model=CreateGenerationResponse)
@@ -960,38 +1262,40 @@ async def create_generation(
     # print("Model: ", json.dumps(model_debug, indent=2))
 
     job_id = uuid4().hex
-    
+
     # Tier Enforcement
     tier_levels = {"Free": 0, "Starter": 1, "Pro": 2, "Designer": 3}
     from .plans import normalize_plan
-    
+
     user_tier = normalize_plan(user.plan)
     required_tier = normalize_plan(payload.model.planTier)
-    
+
     if tier_levels.get(user_tier, 0) < tier_levels.get(required_tier, 0):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"This model requires the {required_tier} plan.",
         )
-    
 
     # Calculate required credits server-side to prevent tampering
     required_credits = payload.looks * COST_PER_LOOK.get(payload.quality, 1)
-    
+
     if required_credits > user.credits:
-      raise HTTPException(
-          status_code=status.HTTP_402_PAYMENT_REQUIRED,
-          detail="You do not have enough credits to perform this action",
-      )
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="You do not have enough credits to perform this action",
+        )
 
     # Validate and resize oversized uploads before sending off to worker
     for upload in payload.uploads:
         _process_upload(upload)
-    
-    callback_url = _build_callback_url(job_id)
-    target_url = _resolve_generation_url(
-        payload.generationServerUrl
+
+    generation_style = _style_with_task_type(
+        payload.style, _generation_task_type(payload)
     )
+    payload = payload.model_copy(update={"style": generation_style})
+
+    callback_url = _build_callback_url(job_id)
+    target_url = _resolve_generation_url(payload.generationServerUrl)
     forwarded_payload = _build_generation_payload(payload, user, job_id, callback_url)
 
     new_credits = _adjust_profile_credits(user.id, -required_credits)
@@ -1008,6 +1312,9 @@ async def create_generation(
         model_id=payload.model.id,
         model_name=payload.model.name,
         style=payload.style or None,
+        aspect=payload.aspect,
+        dims=_dims_payload(payload.dims),
+        quality=payload.quality,
     )
 
     try:
@@ -1120,16 +1427,18 @@ async def receive_generation_event(
         if event.progress is not None or event.completedLooks is not None:
             update_progress(job, event.progress or job.progress, event.completedLooks)
         if (
-            job.job_type == "image_edit"
-            and job.completed_looks >= job.total_looks
+            job.completed_looks >= job.total_looks
             and job.completed_looks > 0
             and job.status != "completed"
         ):
             mark_completed(job)
             try:
-                _publish_image_edit_completed_notification(job)
+                if job.job_type == "image_edit":
+                    _publish_image_edit_completed_notification(job)
+                else:
+                    _publish_generation_completed_notification(job)
             except Exception:
-                logger.exception("Failed to publish completion notification for edit job %s", job.id)
+                logger.exception("Failed to publish completion notification for job %s", job.id)
     elif event.type == "progress":
         if event.progress is None and event.completedLooks is None:
             raise HTTPException(

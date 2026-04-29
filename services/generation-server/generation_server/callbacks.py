@@ -25,10 +25,22 @@ async def send_event(settings: Settings, job: JobMetadata, event: CallbackEvent)
 
 
 async def safe_send_event(settings: Settings, job: JobMetadata, event: CallbackEvent) -> None:
-    """Dispatch an event while swallowing network failures."""
+    """Dispatch an event with retries while swallowing network failures."""
 
-    try:
-        await send_event(settings, job, event)
-    except Exception as exc:  # pragma: no cover - logged at runtime
-        await asyncio.sleep(0)
-        print(f"Failed to send generation event for job {job.id}: {exc}")
+    attempts = max(1, settings.callback_max_attempts)
+    delay = max(0.0, settings.callback_retry_delay)
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            await send_event(settings, job, event)
+            return
+        except Exception as exc:  # pragma: no cover - logged at runtime
+            last_error = exc
+            if attempt >= attempts:
+                break
+            await asyncio.sleep(delay)
+            delay = min(delay * 2 if delay > 0 else 0, 30)
+
+    await asyncio.sleep(0)
+    print(f"Failed to send generation event for job {job.id}: {last_error}")

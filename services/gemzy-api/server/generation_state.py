@@ -25,11 +25,16 @@ class GenerationJob:
     model_id: str | None = None
     model_name: str | None = None
     style: Dict[str, str] | None = None
+    aspect: str | None = None
+    dims: dict[str, int] | None = None
+    quality: str | None = None
     unsaved_collection_id: str | None = None
     job_type: str = "generation"
     edit_source: dict[str, Any] | None = None
     edit_instructions: list[dict[str, Any]] = field(default_factory=list)
     edit_credit_cost: int | None = None
+    edit_trial_applied: bool = False
+    edit_mode_trial_edits_remaining: int | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -49,10 +54,16 @@ def create_job(
     model_id: str | None = None,
     model_name: str | None = None,
     style: Dict[str, str] | None = None,
+    aspect: str | None = None,
+    dims: dict[str, int] | None = None,
+    quality: str | None = None,
+    unsaved_collection_id: str | None = None,
     job_type: str = "generation",
     edit_source: dict[str, Any] | None = None,
     edit_instructions: list[dict[str, Any]] | None = None,
     edit_credit_cost: int | None = None,
+    edit_trial_applied: bool = False,
+    edit_mode_trial_edits_remaining: int | None = None,
 ) -> GenerationJob:
     job = GenerationJob(
         id=job_id,
@@ -61,10 +72,16 @@ def create_job(
         model_id=model_id,
         model_name=model_name,
         style=style,
+        aspect=aspect,
+        dims=dims,
+        quality=quality,
+        unsaved_collection_id=unsaved_collection_id,
         job_type=job_type,
         edit_source=edit_source,
         edit_instructions=edit_instructions or [],
         edit_credit_cost=edit_credit_cost,
+        edit_trial_applied=edit_trial_applied,
+        edit_mode_trial_edits_remaining=edit_mode_trial_edits_remaining,
     )
     with _LOCK:
         _JOBS[job_id] = job
@@ -93,6 +110,8 @@ def to_response(job: GenerationJob) -> dict:
                 "editSource": job.edit_source,
                 "editInstructions": job.edit_instructions,
                 "editCreditCost": job.edit_credit_cost,
+                "editTrialApplied": job.edit_trial_applied,
+                "editModeTrialEditsRemaining": job.edit_mode_trial_edits_remaining,
             }
         )
     return payload

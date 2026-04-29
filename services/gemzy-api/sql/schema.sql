@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   plan plan_tier NOT NULL DEFAULT 'Free',
   credits INTEGER NOT NULL DEFAULT 0 CHECK (credits >= 0),
   purchased_credits INTEGER NOT NULL DEFAULT 0 CHECK (purchased_credits >= 0),
+  edit_mode_trial_edits_remaining INTEGER NOT NULL DEFAULT 2 CHECK (
+    edit_mode_trial_edits_remaining >= 0
+    AND edit_mode_trial_edits_remaining <= 2
+  ),
   avatar_url TEXT,
   notification_preferences JSONB NOT NULL DEFAULT jsonb_build_object(
     'gemzyUpdates', TRUE,
@@ -165,6 +169,29 @@ CREATE INDEX IF NOT EXISTS app_notifications_target_user_id_idx
 
 CREATE INDEX IF NOT EXISTS app_notifications_is_active_idx
   ON app_notifications (is_active);
+
+CREATE TABLE IF NOT EXISTS image_edit_feedback (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  edit_job_id TEXT NOT NULL,
+  source_key TEXT,
+  rating TEXT NOT NULL CHECK (rating IN ('awesome', 'good', 'okay', 'bad', 'very_bad')),
+  comment TEXT,
+  edit_option_ids TEXT[] NOT NULL DEFAULT '{}',
+  edit_labels TEXT[] NOT NULL DEFAULT '{}',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS image_edit_feedback_user_created_idx
+  ON image_edit_feedback (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS image_edit_feedback_edit_job_idx
+  ON image_edit_feedback (edit_job_id);
+
+CREATE INDEX IF NOT EXISTS image_edit_feedback_rating_idx
+  ON image_edit_feedback (rating);
 
 CREATE TABLE IF NOT EXISTS prompt_engines (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -358,6 +385,18 @@ BEGIN
   ) THEN
     CREATE TRIGGER app_notifications_set_updated_at
       BEFORE UPDATE ON app_notifications
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'image_edit_feedback_set_updated_at'
+  ) THEN
+    CREATE TRIGGER image_edit_feedback_set_updated_at
+      BEFORE UPDATE ON image_edit_feedback
       FOR EACH ROW
       EXECUTE FUNCTION set_updated_at();
   END IF;

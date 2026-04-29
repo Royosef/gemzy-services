@@ -119,6 +119,7 @@ class UserState(BaseModel):
     retentionOfferUsedAt: str | None = None
     onboardingCompleted: bool = False
     styleTrials: dict[str, dict[str, object]] | None = None
+    editModeTrialEditsRemaining: int = Field(default=2, ge=0, le=2)
 
 
 class StyleTrialState(BaseModel):
@@ -189,6 +190,7 @@ class CollectionImageInput(BaseModel):
     hash: str | None = None
     name: str | None = None
     category: str | None = None
+    metadata: dict[str, object] | None = None
     modelId: str | None = None
     modelName: str | None = None
 
@@ -339,6 +341,20 @@ class GenerationDimensions(BaseModel):
     h: int
 
 
+GenerationAspect = Literal[
+    "1:1",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:3",
+    "4:5",
+    "9:16",
+    "16:9",
+    "21:9",
+]
+GenerationQuality = Literal["1080p", "2K", "4K"]
+
+
 class ItemPayload(BaseModel):
     """Metadata for an item being generated."""
 
@@ -357,10 +373,10 @@ class CreateGenerationPayload(BaseModel):
     model: GenerationModelPayload
     style: dict[str, str] = Field(default_factory=dict)
     mode: Literal["SIMPLE", "ADVANCED"]
-    aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"]
+    aspect: GenerationAspect
     dims: GenerationDimensions
     looks: int
-    quality: Literal["1080p", "2K", "4K"]
+    quality: GenerationQuality
     plan: str
     creditsNeeded: int
     promptOverrides: list[str] = Field(default_factory=list)
@@ -378,6 +394,7 @@ class GenerationResultPayload(BaseModel):
     modelId: str | None = None
     modelName: str | None = None
     createdAt: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ImageEditSourcePayload(BaseModel):
@@ -390,8 +407,13 @@ class ImageEditSourcePayload(BaseModel):
     collectionId: str | None = None
     collectionItemId: str | None = None
     generationJobId: str | None = None
+    modelId: str | None = None
     modelSlug: str | None = None
     modelName: str | None = None
+    style: dict[str, str] | None = None
+    aspect: GenerationAspect | None = None
+    dims: GenerationDimensions | None = None
+    quality: GenerationQuality | None = None
     createdAt: str | None = None
 
 
@@ -411,9 +433,29 @@ class CreateImageEditPayload(BaseModel):
     sourceImage: GenerationUploadPayload
     source: ImageEditSourcePayload
     edits: list[str]
-    aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"] = "1:1"
-    dims: GenerationDimensions = Field(default_factory=lambda: GenerationDimensions(w=1080, h=1080))
-    quality: Literal["1080p", "2K", "4K"] = "1080p"
+    aspect: GenerationAspect = "1:1"
+    dims: GenerationDimensions = Field(
+        default_factory=lambda: GenerationDimensions(w=1080, h=1080)
+    )
+    quality: GenerationQuality = "1080p"
+
+
+class ImageEditFeedbackRequest(BaseModel):
+    """Feedback submitted from the review edit screen."""
+
+    rating: Literal["awesome", "good", "okay", "bad", "very_bad"]
+    comment: str | None = None
+    sourceKey: str | None = None
+    editOptionIds: list[str] = Field(default_factory=list)
+    editLabels: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ImageEditFeedbackResponse(BaseModel):
+    """Persisted feedback response."""
+
+    id: str
+    createdAt: str | None = None
 
 
 class CreateGenerationResponse(BaseModel):
@@ -431,6 +473,8 @@ class CreateGenerationResponse(BaseModel):
     editSource: ImageEditSourcePayload | None = None
     editInstructions: list[ImageEditInstructionPayload] = Field(default_factory=list)
     editCreditCost: int | None = Field(default=None, ge=0)
+    editTrialApplied: bool | None = None
+    editModeTrialEditsRemaining: int | None = Field(default=None, ge=0, le=2)
 
 
 class GenerationJobEvent(BaseModel):

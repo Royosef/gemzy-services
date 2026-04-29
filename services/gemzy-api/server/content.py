@@ -965,7 +965,7 @@ def _prepare_collection_images(
 
         external_id = storage_path or uuid4().hex
 
-        metadata: dict[str, object] = {}
+        metadata = dict(image.metadata) if isinstance(image.metadata, Mapping) else {}
         if image.contentType:
             metadata["contentType"] = image.contentType
         if image.size is not None:
