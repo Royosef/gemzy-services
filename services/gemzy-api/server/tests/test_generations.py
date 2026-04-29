@@ -432,6 +432,8 @@ def test_image_edit_forwards_source_metadata_and_real_model(
             "modelId": "model-zaya",
             "modelSlug": "zaya-editorial",
             "modelName": "Zaya Amune",
+            "modelImageUri": "https://cdn.example/models/zaya.png",
+            "modelImageBase64": "emF5YS1tb2RlbA==",
             "style": {
                 "task_type": "on-model",
                 "background": "Studio",
@@ -459,6 +461,8 @@ def test_image_edit_forwards_source_metadata_and_real_model(
     forwarded = mock_client.calls[0][1]["request"]
     assert forwarded["model"]["slug"] == "image-edit"
     assert forwarded["model"]["name"] == "Zaya Amune"
+    assert forwarded["model"]["imageUri"] == "https://cdn.example/models/zaya.png"
+    assert forwarded["model"]["imageBase64"] == "emF5YS1tb2RlbA=="
     assert forwarded["aspect"] == "4:5"
     assert forwarded["dims"] == {"w": 1080, "h": 1350}
     assert forwarded["quality"] == "2k"

@@ -182,6 +182,18 @@ class GoogleGeminiRunner:
             )
         )
 
+        if model_image:
+            prompt_parts.append(
+                genai_types.Part(
+                    text=(
+                        "The next image references are jewelry/product inputs only. "
+                        "Use them only for jewelry design, gemstones, materials, scale, "
+                        "and placement cues. If any people, faces, bodies, hair, clothing, "
+                        "or persona traits appear in those jewelry images, ignore them."
+                    )
+                )
+            )
+
         for index, product_image in enumerate(product_images):
             if not product_image:
                 continue
@@ -200,6 +212,16 @@ class GoogleGeminiRunner:
             )
 
         if model_image:
+            prompt_parts.append(
+                genai_types.Part(
+                    text=(
+                        "The next image is the authoritative model/persona reference. "
+                        "Use only this image for identity, face, body, skin tone, hair, "
+                        "and overall persona. Do not borrow persona traits from the jewelry "
+                        "reference images."
+                    )
+                )
+            )
             prompt_parts.append(
                 genai_types.Part(
                     inline_data=genai_types.Blob(

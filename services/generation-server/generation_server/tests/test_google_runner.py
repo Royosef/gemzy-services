@@ -131,6 +131,81 @@ def test_generate_returns_bytes():
     assert client.calls[0]["config"].kwargs["image_config"].kwargs["output_mime_type"] == "image/png"
 
 
+def test_generate_labels_jewelry_and_model_references_separately():
+    response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
+    client = DummyClient(response)
+
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        model="gemini-test",
+        client=client,
+    )
+
+    asyncio.run(
+        runner.generate(
+            prompt="prompt",
+            negative_prompt="no",
+            product_images=[b"foo"],
+            model_image=b"bar",
+            product_image_mime_types=["image/jpeg"],
+            model_image_mime_type="image/png",
+            aspect="1:1",
+            look_index=0,
+        )
+    )
+
+    parts = client.calls[0]["contents"][0].parts
+    texts = [part.text for part in parts if getattr(part, "text", None)]
+    blobs = [part.inline_data for part in parts if getattr(part, "inline_data", None)]
+
+    assert any(
+        "ignore them" in text and "jewelry/product inputs only" in text
+        for text in texts
+    )
+    assert any(
+        "authoritative model/persona reference" in text
+        and "Do not borrow persona traits" in text
+        for text in texts
+    )
+    assert len(blobs) == 2
+    assert blobs[0].mime_type == "image/jpeg"
+    assert blobs[0].data == b"foo"
+    assert blobs[1].mime_type == "image/png"
+    assert blobs[1].data == b"bar"
+
+
+def test_generate_without_model_image_does_not_add_persona_disambiguation_text():
+    response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
+    client = DummyClient(response)
+
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        model="gemini-test",
+        client=client,
+    )
+
+    asyncio.run(
+        runner.generate(
+            prompt="prompt",
+            negative_prompt="",
+            product_images=[b"foo"],
+            model_image=b"",
+            product_image_mime_types=["image/jpeg"],
+            aspect="1:1",
+            look_index=0,
+        )
+    )
+
+    texts = [
+        part.text
+        for part in client.calls[0]["contents"][0].parts
+        if getattr(part, "text", None)
+    ]
+
+    assert not any("authoritative model/persona reference" in text for text in texts)
+    assert not any("jewelry/product inputs only" in text for text in texts)
+
+
 def test_generate_reads_top_level_response_parts():
     response = DummyResponse(
         [],

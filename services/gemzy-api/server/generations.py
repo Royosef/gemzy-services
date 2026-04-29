@@ -82,87 +82,93 @@ IMAGE_EDIT_BASE_COST = 8
 IMAGE_EDIT_UPSCALE_COST = 14
 BASE_TASK_TYPE_ON_MODEL = "on-model"
 BASE_TASK_TYPE_PURE_JEWELRY = "pure-jewelry"
+IMAGE_EDIT_HERO_PROMPT = (
+    "Generate this exact same image. Change nothing except the specific modifications stated below. "
+    "Every element of the original image - the background, the scene, the lighting, the model, the pose, "
+    "the outfit, the skin, the framing, the sharpness - is preserved exactly as it appears. "
+    "If anything other than the stated changes is different from the original, the image is not ready."
+)
 
 IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
     "jewelry_smaller": {
         "label": "Make the jewelry a bit smaller",
         "category": "jewelry",
-        "prompt": "Make the jewelry slightly smaller while preserving its design and placement.",
+        "prompt": "Reduce the overall scale of the jewelry by approximately 10% - uniformly across all dimensions, preserving the exact proportions of the original piece. Width, height, and depth must all reduce by the same proportional amount. The jewelry's design, material, color, gemstones, metal tone, surface finish, and position on the body all remain identical to the original. Do not stretch, squash, narrow, or alter any individual dimension independently. The only difference between the new jewelry and the original is uniform scale. If the size reduction exceeds 15%, or if any property of the jewelry changes other than its scale, the image is not ready.",
     },
     "jewelry_bigger": {
         "label": "Make the jewelry a bit bigger",
         "category": "jewelry",
-        "prompt": "Make the jewelry slightly larger while keeping it realistic and proportional.",
+        "prompt": "Increase the overall scale of the jewelry by approximately 10% - uniformly across all dimensions, preserving the exact proportions of the original piece. Width, height, and depth must all increase by the same proportional amount. The jewelry's design, material, color, gemstones, metal tone, surface finish, and position on the body all remain identical to the original. Do not stretch, expand, widen, or alter any individual dimension independently. The only difference between the new jewelry and the original is uniform scale. If the size increase exceeds 15%, or if any property of the jewelry changes other than its scale, the image is not ready.",
     },
     "enhance_shine": {
         "label": "Enhance shine & reflections",
         "category": "jewelry",
-        "prompt": "Enhance gemstone and metal shine, reflections, depth, and polished highlights.",
+        "prompt": "Enhance the metal and gemstone surfaces of the jewelry - increase specular highlights, deepen reflectivity, and add realistic polish and depth to the material surfaces. The enhancement must look photographically real - no artificial sparkle, no starburst effects, no graphic overlays. The jewelry should look like it was lit more precisely, not digitally altered.",
     },
     "zoom_in": {
         "label": "Zoom in on the jewelry",
         "category": "framing",
-        "prompt": "Crop closer toward the jewelry while keeping the image premium and balanced.",
+        "prompt": "Crop the frame approximately 15% closer toward the jewelry, keeping the jewelry sharp, fully visible, and centered within the new frame. The jewelry must remain completely unobstructed.",
     },
     "zoom_out": {
         "label": "Zoom out for full context",
         "category": "framing",
-        "prompt": "Widen the framing to show more context around the jewelry and scene.",
+        "prompt": "Widen the frame by approximately 15% to reveal more of the scene and context around the jewelry. The jewelry remains sharp and fully visible within the expanded frame.",
     },
     "camera_low_angle": {
         "label": "Low angle",
         "category": "framing",
-        "prompt": "Reframe from a subtle low angle perspective.",
+        "prompt": "Reframe the image from a subtle low angle perspective - the camera shifts slightly downward, looking up toward the subject. The shift is gentle and editorial, not extreme. The jewelry remains fully visible and sharp.",
     },
     "camera_high_angle": {
         "label": "High angle",
         "category": "framing",
-        "prompt": "Reframe from a subtle high angle perspective.",
+        "prompt": "Reframe the image from a subtle high angle perspective - the camera shifts slightly upward, looking down toward the subject. The shift is gentle and editorial, not extreme. The jewelry remains fully visible and sharp.",
     },
     "camera_rotate_left": {
         "label": "Rotate Slight Left",
         "category": "framing",
-        "prompt": "Rotate the composition slightly left while keeping the jewelry sharp.",
+        "prompt": "Rotate the composition slightly to the left - a subtle, natural tilt of no more than 5 degrees. The jewelry remains sharp and fully visible.",
     },
     "lighting_soft_diffused": {
         "label": "Soft Diffused",
         "category": "lighting_photo",
-        "prompt": "Apply soft diffused studio lighting with gentle, flattering shadows.",
+        "prompt": "Apply soft, diffused lighting across the scene - light wraps from multiple directions, shadow edges become gradual and gentle, no harsh contrast. The jewelry is fully revealed under the soft light.",
     },
     "lighting_side_rim": {
         "label": "Side Rim",
         "category": "lighting_photo",
-        "prompt": "Add a tasteful side rim light that outlines the jewelry and creates depth.",
+        "prompt": "Add a side rim light along one edge of the subject - a narrow, precise light source that creates a bright separation line along the jewelry, the jaw, or the shoulder depending on the composition. The rim light is subtle and editorial - it adds depth and separation without overpowering the existing lighting.",
     },
     "lighting_top_down": {
         "label": "Top Down",
         "category": "lighting_photo",
-        "prompt": "Use elegant top-down lighting with clean highlights on the jewelry.",
+        "prompt": "Shift the primary light source to a top-down position - light falls from directly above, illuminating the top surfaces of the jewelry and the subject while allowing the sides to fall into natural shadow. The jewelry's top face and any gemstones catch the overhead light directly.",
     },
-    "remove_background": {
-        "label": "Remove the background",
+    "gradient_background": {
+        "label": "Add subtle gradient to background",
         "category": "lighting_photo",
-        "prompt": "Remove the background and create a clean transparent product-style cutout.",
+        "prompt": "If the background is a solid or near-solid color: introduce a subtle, natural gradient across that color - lighter at one edge, slightly deeper at the opposite edge, as if studio light is wrapping softly around the scene. The gradient must feel like natural light behavior, not a graphic effect. The color itself does not change - only its tonal depth. If the background is an environmental scene - a location, a textured surface, a real place - do not add a gradient. Instead, deepen the existing atmospheric depth of the scene by subtly darkening the corners and edges while keeping the center bright and sharp.",
     },
     "model_pose": {
         "label": "Change the model's pose",
         "category": "model",
-        "prompt": "Adjust the model pose to feel more natural and editorial while preserving identity.",
+        "prompt": "Change the model's pose to a clearly different position than the original - a different arm placement, a different head angle, a different body orientation, or a combination of these. The new pose must be visibly and immediately different from the original to a viewer comparing the two images. The pose remains natural and editorial - never stiff or performed. The jewelry must remain fully visible and in its original position on the body. The model's identity, outfit, and all other elements remain unchanged. If the pose appears unchanged or only barely different from the original, the image is not ready.",
     },
     "outfit_color": {
         "label": "Change the outfit color",
         "category": "model",
-        "prompt": "Change the outfit color tastefully without changing jewelry or facial identity.",
+        "prompt": "Change the color of the outfit to a different complementary tone - keep the same fabric, the same silhouette, and the same garment entirely. Only the color changes.",
     },
     "upscale_image": {
         "label": "Upscale the image",
         "category": "upscale_sharpen",
-        "prompt": "Upscale the image for higher resolution while preserving natural detail.",
+        "prompt": "Upscale the image to higher resolution while preserving all natural detail - skin texture, fabric texture, jewelry surface, and background all retain their original quality without over-sharpening or introducing artificial detail. The image must look like a higher resolution version of the original, not a processed version of it.",
     },
     "sharpen_image": {
         "label": "Sharpen the image",
         "category": "upscale_sharpen",
-        "prompt": "Sharpen fine details on the jewelry and image while avoiding artifacts.",
+        "prompt": "Sharpen the fine details of the image - the edges of the jewelry, the texture of the fabric, the clarity of the skin - while avoiding over-sharpening artifacts, halos, or unnatural crispness. The sharpening should feel like better focus, not digital processing.",
     },
 }
 
@@ -228,6 +234,19 @@ def _image_edit_model_id(payload: CreateImageEditPayload) -> str | None:
     if _image_edit_source_base_task_type(payload) == BASE_TASK_TYPE_PURE_JEWELRY:
         return "pure-jewelry-model"
     return None
+
+
+def _image_edit_model_image_uri(payload: CreateImageEditPayload) -> str | None:
+    source_image_uri = payload.source.url or payload.source.previewUrl
+    if _image_edit_source_base_task_type(payload) == BASE_TASK_TYPE_PURE_JEWELRY:
+        return source_image_uri
+    return payload.source.modelImageUri or source_image_uri
+
+
+def _image_edit_model_image_base64(payload: CreateImageEditPayload) -> str | None:
+    if _image_edit_source_base_task_type(payload) == BASE_TASK_TYPE_PURE_JEWELRY:
+        return None
+    return payload.source.modelImageBase64
 
 
 def _dims_payload(dims: Any) -> dict[str, int] | None:
@@ -972,10 +991,7 @@ def _build_image_edit_prompt(
     payload: CreateImageEditPayload,
     instructions: list[ImageEditInstructionPayload],
 ) -> str:
-    lines = [
-        "Edit the uploaded source image. Preserve the original jewelry design, materials, identity, and premium campaign quality.",
-        "Apply only the requested edits. Do not invent new jewelry, change logos, distort anatomy, or alter text/engravings unless directly required.",
-    ]
+    lines = [IMAGE_EDIT_HERO_PROMPT]
     if payload.source.modelSlug == "pure-jewelry":
         lines.append(
             "The source was created as pure jewelry, so do not add or alter a model/person unless explicitly requested."
@@ -1028,7 +1044,8 @@ def _build_image_edit_generation_payload(
             name=_image_edit_model_name(payload),
             planTier="Pro",
             tags=[],
-            imageUri=payload.source.url or payload.source.previewUrl,
+            imageUri=_image_edit_model_image_uri(payload),
+            imageBase64=_image_edit_model_image_base64(payload),
         ),
         style=edit_style,
         mode="ADVANCED",

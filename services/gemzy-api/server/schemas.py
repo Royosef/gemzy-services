@@ -410,6 +410,8 @@ class ImageEditSourcePayload(BaseModel):
     modelId: str | None = None
     modelSlug: str | None = None
     modelName: str | None = None
+    modelImageUri: str | None = None
+    modelImageBase64: str | None = None
     style: dict[str, str] | None = None
     aspect: GenerationAspect | None = None
     dims: GenerationDimensions | None = None

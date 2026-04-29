@@ -80,12 +80,19 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
             or task_type == "image_edit"
             or task_type.endswith("/edited")
         )
+        has_model_reference = bool(
+            request.model.imageBase64 or request.model.imageUri
+        )
 
-        # Pure Jewelry and edit jobs use uploaded imagery as their reference,
-        # so they should not fetch an external model image.
+        # Pure Jewelry uses uploaded imagery as its reference model image.
         if request.model.slug == "pure-jewelry":
             model_image = product_images[0] if product_images else b""
             model_image_mime_type = product_image_mime_types[0] if product_image_mime_types else "image/png"
+        # Edited on-model jobs can optionally carry forward the original model
+        # reference. If it is absent, keep the previous edit behavior.
+        elif is_image_edit and has_model_reference:
+            model_image = await resolve_model_image(request, settings)
+            model_image_mime_type = "image/png"
         elif is_image_edit:
             model_image = b""
             model_image_mime_type = None
