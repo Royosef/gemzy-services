@@ -7,9 +7,8 @@ render exactly like the hard-coded client UI:
 - pure-jewelry
 
 We keep the prompt runtime and the UI contract adjacent by attaching a small
-``ui`` block to the published prompt-engine definitions. The public server
-endpoint then exposes a catalog derived from those published versions, with a
-local fallback defined here so older databases still work.
+catalog derived from prompt definitions plus task and engine display metadata,
+with a local fallback defined here so older databases still work.
 """
 
 from __future__ import annotations
@@ -101,21 +100,39 @@ _DEFAULT_ITEM_TYPES = _item_options(_ITEM_TYPE_LABELS)
 _DEFAULT_ITEM_SIZES = _item_options(_ITEM_SIZE_LABELS)
 
 _ENGINE_SELECTORS = {
-    "v2": _build_selector(
-        "v2",
-        pill_label="Gemzy V2",
-        title="Gemzy V2",
-        description="Sharper placements, realistic lighting, true-to-jewelry detail.",
+    "on-model-v4-5": _build_selector(
+        "on-model-v4-5",
+        pill_label="On-Model V4.5",
+        title="On-Model V4.5",
+        description="Editorial on-model prompt engine with the newer mapping set.",
         badge="New",
         image_key="engine-v2",
         badge_image_key="new-badge",
         sort_order=10,
     ),
-    "v1": _build_selector(
-        "v1",
-        pill_label="Gemzy V1",
-        title="Gemzy V1 (Classic)",
-        description="Our original engine. Best used for comparison.",
+    "on-model-v2": _build_selector(
+        "on-model-v2",
+        pill_label="On-Model V2",
+        title="On-Model V2",
+        description="Original structured on-model prompt engine.",
+        image_key="engine-v1",
+        sort_order=20,
+    ),
+    "pure-jewelry-v5-2": _build_selector(
+        "pure-jewelry-v5-2",
+        pill_label="Pure V5.2",
+        title="Pure Jewelry V5.2",
+        description="Section-based pure-jewelry engine synced to the richer V5.2 definitions.",
+        badge="New",
+        image_key="engine-v2",
+        badge_image_key="new-badge",
+        sort_order=10,
+    ),
+    "pure-jewelry-legacy": _build_selector(
+        "pure-jewelry-legacy",
+        pill_label="Pure Legacy",
+        title="Pure Jewelry Legacy",
+        description="Legacy pure-jewelry prompt builder.",
         image_key="engine-v1",
         sort_order=20,
     ),
@@ -218,7 +235,7 @@ def _build_on_model_sections(
 def _build_on_model_ui(
     *,
     engine_id: str,
-    prompt_version: str,
+    public_version_key: str,
     mapping: dict[str, dict[str, str]],
     free_option_labels: dict[str, list[str] | str],
     trial_task_label: str,
@@ -227,7 +244,7 @@ def _build_on_model_ui(
     return {
         "surface": "onModel",
         "engineId": engine_id,
-        "promptVersion": prompt_version,
+        "publicVersionKey": public_version_key,
         "isDefault": is_default,
         "selector": deepcopy(_ENGINE_SELECTORS[engine_id]),
         "trialTaskLabel": trial_task_label,
@@ -743,7 +760,7 @@ def _build_pure_legacy_styles() -> list[dict[str, Any]]:
 def _build_pure_jewelry_ui(
     *,
     engine_id: str,
-    prompt_version: str,
+    public_version_key: str,
     styles: list[dict[str, Any]],
     default_style_id: str,
     is_default: bool,
@@ -751,7 +768,7 @@ def _build_pure_jewelry_ui(
     return {
         "surface": "pureJewelry",
         "engineId": engine_id,
-        "promptVersion": prompt_version,
+        "publicVersionKey": public_version_key,
         "isDefault": is_default,
         "selector": deepcopy(_ENGINE_SELECTORS[engine_id]),
         "trialTaskLabel": "Pure Jewelry Presets",
@@ -768,31 +785,31 @@ def get_default_engine_ui_blocks() -> dict[str, dict[str, Any]]:
 
     return {
         "on-model-v2": _build_on_model_ui(
-            engine_id="v1",
-            prompt_version="v2",
+            engine_id="on-model-v2",
+            public_version_key="v2",
             mapping=_ON_MODEL_MAPPING_V2,
             free_option_labels=_ON_MODEL_V1_FREE_OPTION_LABELS,
-            trial_task_label="On Model - V1 Presets",
+            trial_task_label="On-Model V2 Presets",
             is_default=False,
         ),
         "on-model-v4-5": _build_on_model_ui(
-            engine_id="v2",
-            prompt_version="v4.5",
+            engine_id="on-model-v4-5",
+            public_version_key="v4.5",
             mapping=_ON_MODEL_MAPPING_V45,
             free_option_labels=_ON_MODEL_V2_FREE_OPTION_LABELS,
-            trial_task_label="On Model - V2 Presets",
+            trial_task_label="On-Model V4.5 Presets",
             is_default=True,
         ),
         "pure-jewelry-legacy": _build_pure_jewelry_ui(
-            engine_id="v1",
-            prompt_version="v1",
+            engine_id="pure-jewelry-legacy",
+            public_version_key="v1",
             styles=_build_pure_legacy_styles(),
             default_style_id="studio-shot",
             is_default=False,
         ),
         "pure-jewelry-v5-2": _build_pure_jewelry_ui(
-            engine_id="v2",
-            prompt_version="v5.2",
+            engine_id="pure-jewelry-v5-2",
+            public_version_key="v5.2",
             styles=_build_pure_v2_styles(),
             default_style_id="pure-studio",
             is_default=True,
@@ -831,4 +848,38 @@ def get_default_generation_ui_catalog() -> dict[str, Any]:
         "version": GENERATION_UI_CATALOG_VERSION,
         "onModel": _finalize_surface(on_model_engines),
         "pureJewelry": _finalize_surface(pure_jewelry_engines),
+        "tasks": [
+            {
+                "key": "on-model",
+                "name": "On Model",
+                "description": "Primary on-model jewelry generation task.",
+                "surface": "onModel",
+                **_finalize_surface(on_model_engines),
+            },
+            {
+                "key": "on-model/edited",
+                "name": "On Model Edit",
+                "description": "Edit flow for on-model generations.",
+                "surface": "onModel",
+                "parentTaskKey": "on-model",
+                "defaultEngineId": None,
+                "engines": [],
+            },
+            {
+                "key": "pure-jewelry",
+                "name": "Pure Jewelry",
+                "description": "Primary pure-jewelry generation task.",
+                "surface": "pureJewelry",
+                **_finalize_surface(pure_jewelry_engines),
+            },
+            {
+                "key": "pure-jewelry/edited",
+                "name": "Pure Jewelry Edit",
+                "description": "Edit flow for pure-jewelry generations.",
+                "surface": "pureJewelry",
+                "parentTaskKey": "pure-jewelry",
+                "defaultEngineId": None,
+                "engines": [],
+            },
+        ],
     }

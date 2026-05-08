@@ -13,7 +13,27 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import auth, content, generations, notifications, payments, plans_router, prompt_engines
+from . import (
+    auth,
+    dashboard_brain_context,
+    content,
+    dashboard_coach,
+    dashboard_email,
+    dashboard_email_advanced,
+    dashboard_email_public,
+    dashboard_fx,
+    dashboard_funnel,
+    dashboard_meta,
+    dashboard_revenue,
+    dashboard_social,
+    dashboard_social_sources,
+    dashboard_webhooks,
+    generations,
+    notifications,
+    payments,
+    plans_router,
+    prompt_engines,
+)
 from .user_admin import process_due_credit_resets, process_due_user_deletions
 from .logging_config import setup_logging
 
@@ -76,6 +96,19 @@ app.include_router(generations.router)
 app.include_router(payments.router)
 app.include_router(notifications.router)
 app.include_router(prompt_engines.router)
+app.include_router(dashboard_meta.router)
+app.include_router(dashboard_coach.router)
+app.include_router(dashboard_social.router)
+app.include_router(dashboard_social_sources.router)
+app.include_router(dashboard_fx.router)
+app.include_router(dashboard_revenue.router)
+app.include_router(dashboard_brain_context.router)
+app.include_router(dashboard_email.router)
+app.include_router(dashboard_email_advanced.router)
+app.include_router(dashboard_email_public.router)
+app.include_router(dashboard_webhooks.router)
+app.include_router(dashboard_funnel.router)
+app.include_router(dashboard_funnel.coach_stream_router)
 # Plans configuration
 app.include_router(plans_router.router)
 

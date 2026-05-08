@@ -203,3 +203,45 @@ async def test_image_edit_without_forwarded_model_reference_keeps_blank_model(
     assert len(runner.calls) == 1
     assert runner.calls[0]["model_image"] == b""
     assert runner.calls[0]["model_image_mime_type"] is None
+
+
+@pytest.mark.anyio
+async def test_generation_task_resolution_tries_task_first_then_legacy_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _Runner()
+    resolve_calls: list[tuple[str, bool]] = []
+
+    async def _resolve_model_image(_request, _settings):
+        return b"resolved-model-image"
+
+    async def _safe_send_event(_settings, _job, _event):
+        return None
+
+    def _resolve_prompt_task(task_type, _payload, allow_defaults_fallback=True):
+        resolve_calls.append((task_type, allow_defaults_fallback))
+        if task_type == "on-model/edited":
+            raise RuntimeError("route missing")
+        return {
+            "prompts": ["legacy prompt"],
+            "negative_prompt": "legacy negative",
+        }
+
+    monkeypatch.setattr(tasks, "get_settings", _settings)
+    monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
+    monkeypatch.setattr(tasks, "resolve_model_image", _resolve_model_image)
+    monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
+    monkeypatch.setattr(tasks, "resolve_prompt_task", _resolve_prompt_task)
+
+    await tasks.process_generation_job(
+        _payload(
+            model_image_uri="https://example.com/original-model.png",
+            model_image_base64="bW9kZWwtaW1hZ2U=",
+        )
+    )
+
+    assert resolve_calls == [
+        ("on-model/edited", False),
+        (tasks.PROMPT_TASK_IMAGE_GENERATION_COMPOSE, True),
+    ]
+    assert runner.calls[0]["prompt"] == "legacy prompt"

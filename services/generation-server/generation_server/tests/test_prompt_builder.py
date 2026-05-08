@@ -111,7 +111,7 @@ def test_negative_prompt_appends_custom_entries() -> None:
 def test_build_prompts_for_pure_jewelry_v52() -> None:
     request = _pure_jewelry_request(
         style={
-            "prompt_version": "v5.2",
+            "public_version_key": "v5.2",
             "style_type": "pure-studio",
             "scene": "Studio Color",
             "surface": "Silk",
@@ -134,6 +134,28 @@ def test_build_prompts_for_pure_jewelry_v52() -> None:
     assert "SURFACE: Silk" in prompt
     assert "COMPOSITION: Close Up" in prompt
     assert "QUALITY CONTROL" in prompt
+
+
+def test_build_prompts_for_pure_jewelry_v52_accepts_option_ids() -> None:
+    request = _pure_jewelry_request(
+        style={
+            "public_version_key": "v5.2",
+            "style_type": "pure-studio",
+            "scene": "studio-color",
+            "surface": "silk",
+            "lighting": "soft-diffused",
+            "shadow": "soft",
+            "composition": "close-up",
+            "studioColorHex": "#C0FFEE",
+        },
+        size="Very Small",
+    )
+
+    prompt = build_prompts(request)[0]
+
+    assert "SCENE: Studio Color" in prompt
+    assert "SURFACE: Silk" in prompt
+    assert "COMPOSITION: Close Up" in prompt
 
 
 def test_build_prompts_for_pure_jewelry_legacy_fallback() -> None:

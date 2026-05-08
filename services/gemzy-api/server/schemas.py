@@ -30,6 +30,7 @@ class OAuthRequest(BaseModel):
     token: str
     nonce: str | None = None
     name: str | None = None
+    redirectUri: str | None = None
 
 class NotificationPreferences(BaseModel):
     """Notification preferences stored for a user."""
@@ -524,6 +525,36 @@ class GenerationUiEngineSelectorResponse(BaseModel):
     sortOrder: int = 100
 
 
+class GenerationUiEditOptionResponse(BaseModel):
+    """Single edit option rendered by the image-edit flow."""
+
+    id: str
+    label: str
+    description: str
+    category: str
+    parentId: str | None = None
+    parentLabel: str | None = None
+    exclusiveGroup: str | None = None
+    conflictsWith: list[str] = Field(default_factory=list)
+
+
+class GenerationUiEditCategoryResponse(BaseModel):
+    """Edit mode category and its option/group ids."""
+
+    id: str
+    label: str
+    options: list[str] = Field(default_factory=list)
+    disabled: bool = False
+    disabledReason: str | None = None
+
+
+class GenerationUiEditConfigResponse(BaseModel):
+    """DB-managed image-edit configuration for an edit engine version."""
+
+    categories: list[GenerationUiEditCategoryResponse] = Field(default_factory=list)
+    options: list[GenerationUiEditOptionResponse] = Field(default_factory=list)
+
+
 class GenerationUiStyleResponse(BaseModel):
     """Pure-jewelry style card and its editable parameters."""
 
@@ -537,10 +568,13 @@ class GenerationUiSurfaceEngineResponse(BaseModel):
     """Renderable engine configuration for a specific creation surface."""
 
     surface: str
+    taskKey: str | None = None
     engineId: str
+    publicEngineKey: str | None = None
     engineSlug: str
-    promptVersion: str | None = None
+    publicVersionKey: str | None = None
     isDefault: bool = False
+    isUserSelectable: bool = True
     selector: GenerationUiEngineSelectorResponse
     trialTaskLabel: str | None = None
     trialPopupImageKey: str | None = None
@@ -549,11 +583,25 @@ class GenerationUiSurfaceEngineResponse(BaseModel):
     defaultStyleId: str | None = None
     sections: list[GenerationUiSectionResponse] = Field(default_factory=list)
     styles: list[GenerationUiStyleResponse] = Field(default_factory=list)
+    editConfig: GenerationUiEditConfigResponse | None = None
 
 
 class GenerationUiSurfaceResponse(BaseModel):
     """Server-driven config for a single creation surface."""
 
+    defaultEngineId: str | None = None
+    engines: list[GenerationUiSurfaceEngineResponse] = Field(default_factory=list)
+
+
+class GenerationUiTaskResponse(BaseModel):
+    """Task-scoped generation UI metadata for dynamic clients."""
+
+    key: str
+    name: str
+    description: str | None = None
+    surface: str | None = None
+    parentTaskKey: str | None = None
+    displayDefaults: dict[str, Any] = Field(default_factory=dict)
     defaultEngineId: str | None = None
     engines: list[GenerationUiSurfaceEngineResponse] = Field(default_factory=list)
 
@@ -565,11 +613,14 @@ class GenerationUiCatalogResponse(BaseModel):
     fetchedAt: str | None = None
     onModel: GenerationUiSurfaceResponse
     pureJewelry: GenerationUiSurfaceResponse
+    tasks: list[GenerationUiTaskResponse] = Field(default_factory=list)
 
 
 class PromptEngineVersionEditor(BaseModel):
     """Editable fields for a prompt-engine version definition."""
 
+    versionName: str | None = None
+    publicVersionKey: str | None = None
     changeNote: str | None = None
     definition: dict[str, Any] = Field(default_factory=dict)
     sampleInput: dict[str, Any] = Field(default_factory=dict)
@@ -581,8 +632,18 @@ class CreatePromptEnginePayload(BaseModel):
     slug: str
     name: str
     description: str | None = None
+    managementTask: str | None = None
     taskType: str
     rendererKey: str
+    publicEngineKey: str | None = None
+    isUserSelectable: bool = False
+    sortOrder: int = 100
+    selectorPillLabel: str | None = None
+    selectorTitle: str | None = None
+    selectorDescription: str | None = None
+    selectorBadge: str | None = None
+    selectorImageKey: str | None = None
+    selectorBadgeImageKey: str | None = None
     inputSchema: dict[str, Any] = Field(default_factory=dict)
     outputSchema: dict[str, Any] = Field(default_factory=dict)
     labels: dict[str, Any] = Field(default_factory=dict)
@@ -595,8 +656,18 @@ class UpdatePromptEnginePayload(BaseModel):
     slug: str | None = None
     name: str | None = None
     description: str | None = None
+    managementTask: str | None = None
     taskType: str | None = None
     rendererKey: str | None = None
+    publicEngineKey: str | None = None
+    isUserSelectable: bool | None = None
+    sortOrder: int | None = None
+    selectorPillLabel: str | None = None
+    selectorTitle: str | None = None
+    selectorDescription: str | None = None
+    selectorBadge: str | None = None
+    selectorImageKey: str | None = None
+    selectorBadgeImageKey: str | None = None
     inputSchema: dict[str, Any] | None = None
     outputSchema: dict[str, Any] | None = None
     labels: dict[str, Any] | None = None
@@ -610,6 +681,8 @@ class CreatePromptEngineVersionPayload(PromptEngineVersionEditor):
 class UpdatePromptEngineVersionPayload(BaseModel):
     """Update a draft prompt-engine version."""
 
+    versionName: str | None = None
+    publicVersionKey: str | None = None
     changeNote: str | None = None
     definition: dict[str, Any] | None = None
     sampleInput: dict[str, Any] | None = None
@@ -622,8 +695,11 @@ class PromptEngineVersionResponse(BaseModel):
     engineId: str
     versionNumber: int
     status: str
+    versionName: str | None = None
+    publicVersionKey: str | None = None
     changeNote: str | None = None
     definition: dict[str, Any] = Field(default_factory=dict)
+    components: list[str] = Field(default_factory=list)
     sampleInput: dict[str, Any] = Field(default_factory=dict)
     createdAt: str | None = None
 
@@ -635,8 +711,20 @@ class PromptEngineResponse(BaseModel):
     slug: str
     name: str
     description: str | None = None
+    taskId: str | None = None
+    managementTask: str | None = None
     taskType: str
     rendererKey: str
+    publicEngineKey: str | None = None
+    isUserSelectable: bool = False
+    sortOrder: int = 100
+    selectorPillLabel: str | None = None
+    selectorTitle: str | None = None
+    selectorDescription: str | None = None
+    selectorBadge: str | None = None
+    selectorImageKey: str | None = None
+    selectorBadgeImageKey: str | None = None
+    activeVersionId: str | None = None
     inputSchema: dict[str, Any] = Field(default_factory=dict)
     outputSchema: dict[str, Any] = Field(default_factory=dict)
     labels: dict[str, Any] = Field(default_factory=dict)
@@ -686,7 +774,9 @@ class PromptTaskRouteResponse(BaseModel):
     id: str
     slug: str
     name: str
+    taskId: str | None = None
     taskType: str
+    managementTask: str | None = None
     priority: int
     isActive: bool = True
     matchRules: dict[str, Any] = Field(default_factory=dict)
@@ -704,8 +794,374 @@ class PromptEnginePreviewPayload(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
 
 
+class PromptManagementTaskResponse(BaseModel):
+    """Task-scoped prompt management payload for the admin dashboard."""
+
+    id: str | None = None
+    key: str
+    title: str
+    description: str | None = None
+    surface: str | None = None
+    parentTaskKey: str | None = None
+    displayDefaults: dict[str, Any] = Field(default_factory=dict)
+    engines: list[PromptEngineDetailResponse] = Field(default_factory=list)
+    routes: list[PromptTaskRouteResponse] = Field(default_factory=list)
+
+
 class PromptEnginePreviewResponse(BaseModel):
     """Preview result for the admin prompt-engine editor."""
 
     output: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardOverviewMetricsResponse(BaseModel):
+    totalSpend: str = "0"
+    totalImpressions: int = 0
+    totalResults: int = 0
+    avgRoas: str = "0"
+    lastSyncedAt: str | None = None
+
+
+class DashboardTopAdResponse(BaseModel):
+    id: str
+    adName: str
+    campaignName: str | None = None
+    spend: str = "0"
+    results: int = 0
+    costPerResult: str = "0"
+
+
+class DashboardMetaSpendPointResponse(BaseModel):
+    date: str
+    spend: float = 0
+
+
+class DashboardMetaSpendTimeseriesResponse(BaseModel):
+    granularity: str
+    currency: str = "USD"
+    points: list[DashboardMetaSpendPointResponse] = Field(default_factory=list)
+
+
+class DashboardCampaignPerformanceRowResponse(BaseModel):
+    campaignId: str
+    campaignName: str
+    status: str = "UNKNOWN"
+    spendUsd: float = 0
+    purchases: int = 0
+    revenueUsd: float = 0
+    roas: float | None = None
+    cacUsd: float | None = None
+    hasAttribution: bool = False
+
+
+class DashboardCampaignPerformanceResponse(BaseModel):
+    rangeDays: int
+    fetchedAt: str
+    rows: list[DashboardCampaignPerformanceRowResponse] = Field(default_factory=list)
+    hasAnyAttribution: bool = False
+
+
+class DashboardMetaSyncResponse(BaseModel):
+    campaigns: int = 0
+    adSets: int = 0
+    adSetsCbo: int = 0
+    adSetsAbo: int = 0
+    ads: int = 0
+    durationMs: int = 0
+
+
+class DashboardCoachRecommendationResponse(BaseModel):
+    id: str
+    action: str
+    reasoning: str
+    executionNotes: str | None = None
+    priority: str
+    status: str
+    createdAt: str | None = None
+    snoozedUntil: str | None = None
+
+
+class DashboardCoachRecordActionPayload(BaseModel):
+    recommendationId: str
+    action: Literal["done", "dismissed", "snoozed"]
+    note: str | None = None
+
+
+class DashboardCoachActionResponse(BaseModel):
+    id: str
+    recommendationId: str
+    action: str
+    note: str | None = None
+    createdAt: str | None = None
+
+
+class DashboardCoachUndoPayload(BaseModel):
+    recommendationActionId: str
+
+
+class DashboardUndoResponse(BaseModel):
+    recommendationId: str
+
+
+class DashboardSocialAccountResponse(BaseModel):
+    id: str | None = None
+    username: str | None = None
+    followerCount: int | None = None
+    niche: str | None = None
+    location: str | None = None
+    fitScore: float | None = None
+    sourceUrl: str | None = None
+    discoveredViaQuery: str | None = None
+
+
+class DashboardSocialRecommendationResponse(BaseModel):
+    id: str
+    accountId: str
+    actionType: str
+    suggestedText: str | None = None
+    details: dict[str, Any] | None = None
+    reasoning: str
+    priority: str
+    status: str
+    generatedAt: str | None = None
+    actedAt: str | None = None
+    account: DashboardSocialAccountResponse | None = None
+
+
+class DashboardSocialGenerateStatsResponse(BaseModel):
+    candidatesSelected: int = 0
+    recentRecommendationCount: int = 0
+    generatedCount: int = 0
+
+
+class DashboardGenerateDailyActionsResponse(BaseModel):
+    recommendations: list[DashboardSocialRecommendationResponse] = Field(default_factory=list)
+    stats: DashboardSocialGenerateStatsResponse = Field(
+        default_factory=DashboardSocialGenerateStatsResponse
+    )
+
+
+class DashboardSocialRecordActionPayload(BaseModel):
+    recommendationId: str
+    actionType: Literal["Commented", "Followed", "DMed", "Ignored", "Dismissed"]
+    note: str | None = None
+    templateUsedId: str | None = None
+    templateCustomText: str | None = None
+    dismissReason: Literal[
+        "doesnt_match_niche",
+        "inactive_or_private",
+        "not_a_real_brand",
+        "wrong_action_type",
+        "other",
+    ] | None = None
+
+
+class DashboardSocialActionResultResponse(BaseModel):
+    actionId: str
+    status: str
+
+
+class DashboardSocialUndoPayload(BaseModel):
+    recommendationId: str
+
+
+class DashboardSocialStatsResponse(BaseModel):
+    completedToday: int = 0
+    totalActiveRecs: int = 0
+    actionsByType: dict[str, int] = Field(default_factory=dict)
+
+
+class DashboardSocialDiscoveryRunPayload(BaseModel):
+    queries: list[str] = Field(default_factory=list)
+    maxResults: int = Field(default=20, ge=1, le=50)
+
+
+class DashboardSocialDiscoveryRunResponse(BaseModel):
+    queriesRun: int = 0
+    queriesFailed: int = 0
+    totalResultsFromTavily: int = 0
+    totalExtractedHandles: int = 0
+    totalUniqueHandles: int = 0
+    newAccountsAdded: int = 0
+    alreadyKnown: int = 0
+    totalResponseMs: int = 0
+    errors: list[dict[str, str]] = Field(default_factory=list)
+
+
+class DashboardSocialSourceSyncPayload(BaseModel):
+    days: int = Field(default=30, ge=1, le=365)
+
+
+class DashboardInstagramSyncResponse(BaseModel):
+    engagers: dict[str, Any] = Field(default_factory=dict)
+    mentioners: dict[str, Any] = Field(default_factory=dict)
+    dmSenders: dict[str, Any] = Field(default_factory=dict)
+    durationMs: int = 0
+
+
+class DashboardInstagramInsightResponse(BaseModel):
+    name: str
+    total: int = 0
+
+
+class DashboardFxRateResponse(BaseModel):
+    base: str = "USD"
+    target: str = "ILS"
+    rate: float = 0
+    source: str = "fallback"
+    fetchedAt: str | None = None
+
+
+class DashboardRevenueOverviewResponse(BaseModel):
+    mrr: float | None = None
+    revenue28d: float | None = None
+    activeSubscriptions: int | None = None
+    activeTrials: int | None = None
+    newCustomers28d: int | None = None
+    activeUsers28d: int | None = None
+
+
+class DashboardRevenueChartPointResponse(BaseModel):
+    cohort: int
+    date: str
+    value: float
+    incomplete: bool = False
+    measure: int = 0
+
+
+class DashboardRevenueChartResponse(BaseModel):
+    chartName: str
+    resolution: str
+    values: list[DashboardRevenueChartPointResponse] = Field(default_factory=list)
+    yaxisCurrency: str | None = None
+    type: str | None = None
+
+
+class DashboardRevenuePlanBreakdownItemResponse(BaseModel):
+    plan: str
+    cadence: str
+    count: int = 0
+
+
+class DashboardRevenuePlanBreakdownResponse(BaseModel):
+    plans: list[DashboardRevenuePlanBreakdownItemResponse] = Field(default_factory=list)
+    totalActiveSubscribers: int = 0
+
+
+class DashboardRevenuePackBreakdownItemResponse(BaseModel):
+    size: str
+    revenue: float = 0
+    units: int = 0
+
+
+class DashboardRevenuePackBreakdownResponse(BaseModel):
+    packs: list[DashboardRevenuePackBreakdownItemResponse] = Field(default_factory=list)
+
+
+class DashboardRevenueSubscriberRowResponse(BaseModel):
+    customerId: str
+    ref: str
+    plan: str | None = None
+    cadence: str | None = None
+    startedAt: int | None = None
+    status: str
+    creditsRevenueUsdLifetime: float = 0
+    subscriptionsCount: int = 0
+    firstSeenAt: int | None = None
+    lastSeenAt: int | None = None
+    country: str | None = None
+    platform: str | None = None
+
+
+class DashboardRevenueSubscriberListResponse(BaseModel):
+    items: list[DashboardRevenueSubscriberRowResponse] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    pageSize: int = 25
+
+
+class DashboardRevenueSubscriberDetailSubscriptionResponse(BaseModel):
+    productId: str
+    plan: str
+    cadence: str
+    status: str | None = None
+    startsAt: int | None = None
+    endsAt: int | None = None
+    givesAccess: bool = False
+
+
+class DashboardRevenueSubscriberDetailPurchaseResponse(BaseModel):
+    productId: str
+    purchasedAt: int | None = None
+    revenueUsd: float = 0
+    quantity: int = 0
+    pack: str | None = None
+
+
+class DashboardRevenueSubscriberDetailResponse(BaseModel):
+    customerId: str
+    ref: str
+    firstSeenAt: int | None = None
+    lastSeenAt: int | None = None
+    country: str | None = None
+    platform: str | None = None
+    creditsRevenueUsdLifetime: float = 0
+    subscriptionMonthsActive: float = 0
+    averageMrrContributionUsd: float | None = None
+    subscriptions: list[DashboardRevenueSubscriberDetailSubscriptionResponse] = Field(
+        default_factory=list
+    )
+    purchases: list[DashboardRevenueSubscriberDetailPurchaseResponse] = Field(
+        default_factory=list
+    )
+
+
+class DashboardRevenueCohortPointResponse(BaseModel):
+    monthIndex: int
+    activeCount: int
+    retentionPct: float
+    incomplete: bool = False
+
+
+class DashboardRevenueCohortRowResponse(BaseModel):
+    cohortMonth: str
+    cohortLabel: str
+    cohortSize: int
+    points: list[DashboardRevenueCohortPointResponse] = Field(default_factory=list)
+
+
+class DashboardRevenueCohortRetentionResponse(BaseModel):
+    cohorts: list[DashboardRevenueCohortRowResponse] = Field(default_factory=list)
+
+
+class DashboardRevenueConversionBucketsResponse(BaseModel):
+    withinOneMonth: int = 0
+    oneToThree: int = 0
+    threeToSix: int = 0
+    sixPlus: int = 0
+
+
+class DashboardRevenueMonthlyToYearlyResponse(BaseModel):
+    conversions: int = 0
+    monthlySubscribersInRange: int = 0
+    conversionRate: float = 0
+    timeToConversionBuckets: DashboardRevenueConversionBucketsResponse = Field(
+        default_factory=DashboardRevenueConversionBucketsResponse
+    )
+
+
+class DashboardAdminBrainContextNotesResponse(BaseModel):
+    revenueAvailable: bool = False
+    promptShipsTimeseries: bool = False
+    promptShipsSummary: bool = False
+
+
+class DashboardAdminBrainContextResponse(BaseModel):
+    asOf: str
+    generatedInMs: int = 0
+    revenue: dict[str, Any] | None = None
+    revenueSummary: dict[str, Any] | None = None
+    notes: DashboardAdminBrainContextNotesResponse = Field(
+        default_factory=DashboardAdminBrainContextNotesResponse
+    )
 

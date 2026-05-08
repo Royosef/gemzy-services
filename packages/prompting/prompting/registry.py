@@ -55,6 +55,13 @@ def _cache_ttl_seconds() -> float:
         return 30.0
 
 
+def _engine_active_version_id(engine: dict[str, Any]) -> str | None:
+    active_version_id = engine.get("active_version_id") or engine.get("published_version_id")
+    if not active_version_id:
+        return None
+    return str(active_version_id)
+
+
 def _normalize_string(value: Any) -> Any:
     if isinstance(value, str):
         return value.strip().lower()
@@ -117,6 +124,52 @@ def _match_rules(payload: dict[str, Any], rules: dict[str, Any] | None) -> bool:
     return True
 
 
+def _iter_option_entries(option_map: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    for raw_label, option_entry in option_map.items():
+        label = str(raw_label or "").strip()
+        if not label:
+            continue
+        if isinstance(option_entry, dict):
+            yield {
+                "label": str(option_entry.get("label") or label).strip() or label,
+                "id": str(option_entry.get("id") or "").strip(),
+                "prompt": str(option_entry.get("prompt", "")),
+                "raw": option_entry,
+            }
+        else:
+            yield {
+                "label": label,
+                "id": "",
+                "prompt": str(option_entry or ""),
+                "raw": option_entry,
+            }
+
+
+def _resolve_option_selection(option_map: dict[str, Any], selected: str | None) -> dict[str, Any] | None:
+    candidate = str(selected or "").strip()
+    if not candidate:
+        return None
+    if candidate in option_map:
+        option_entry = option_map[candidate]
+        if isinstance(option_entry, dict):
+            return {
+                "label": str(option_entry.get("label") or candidate).strip() or candidate,
+                "id": str(option_entry.get("id") or "").strip(),
+                "prompt": str(option_entry.get("prompt", "")),
+                "raw": option_entry,
+            }
+        return {
+            "label": candidate,
+            "id": "",
+            "prompt": str(option_entry or ""),
+            "raw": option_entry,
+        }
+    for option in _iter_option_entries(option_map):
+        if candidate == option["label"] or (option["id"] and candidate == option["id"]):
+            return option
+    return None
+
+
 def _normalize_jewelry_type_label(
     value: str | None,
     aliases: dict[str, str] | None = None,
@@ -128,15 +181,18 @@ def _normalize_jewelry_type_label(
     aliases = aliases or {}
     if mapping is None:
         return normalized
-    if mapping is not None and normalized in mapping.get("jewelry", {}):
-        return normalized
+    resolved = _resolve_option_selection(mapping.get("jewelry") or {}, normalized)
+    if resolved is not None:
+        return resolved["label"]
     alias = aliases.get(normalized)
-    if alias and (mapping is None or alias in mapping.get("jewelry", {})):
+    if alias and (mapping is None or _resolve_option_selection(mapping.get("jewelry") or {}, alias) is not None):
         return alias
     if mapping is not None:
         for source, target in aliases.items():
-            if target == normalized and source in mapping.get("jewelry", {}):
-                return source
+            if target == normalized:
+                resolved_source = _resolve_option_selection(mapping.get("jewelry") or {}, source)
+                if resolved_source is not None:
+                    return resolved_source["label"]
     return normalized
 
 
@@ -149,14 +205,19 @@ def _normalize_background_label(
         return ""
     normalized = value.strip()
     aliases = aliases or {}
-    if normalized in mapping.get("background", {}):
-        return normalized
+    resolved = _resolve_option_selection(mapping.get("background") or {}, normalized)
+    if resolved is not None:
+        return resolved["label"]
     alias = aliases.get(normalized)
-    if alias and alias in mapping.get("background", {}):
-        return alias
+    if alias:
+        resolved_alias = _resolve_option_selection(mapping.get("background") or {}, alias)
+        if resolved_alias is not None:
+            return resolved_alias["label"]
     for source, target in aliases.items():
-        if target == normalized and source in mapping.get("background", {}):
-            return source
+        if target == normalized:
+            resolved_source = _resolve_option_selection(mapping.get("background") or {}, source)
+            if resolved_source is not None:
+                return resolved_source["label"]
     return normalized
 
 
@@ -349,7 +410,7 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
 
         background = _normalize_background_label(style.get("background"), background_aliases, mapping)
         background_color = str(style.get("studioColorHex") or "").upper()
-        background_text = mapping.get("background", {}).get(background, "")
+        background_text = (_resolve_option_selection(mapping.get("background", {}), background) or {}).get("prompt", "")
         if background and background_text:
             if "{color}" in background_text and background_color:
                 background_text = background_text.replace("{color}", background_color)
@@ -363,31 +424,36 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
             ("lighting", "LIGHTING"),
         ):
             selected = style.get(field)
-            description = mapping.get(field, {}).get(selected, "")
+            resolved_option = _resolve_option_selection(mapping.get(field, {}), str(selected or ""))
+            description = (resolved_option or {}).get("prompt", "")
+            selected = resolved_option["label"] if resolved_option else selected
+            selected = resolved_option["label"] if resolved_option else selected
             if selected and description:
-                parts.append(f"\n{title}: {selected}\n{description}")
+                parts.append(f"\n{title}: {resolved_option['label'] if resolved_option else selected}\n{description}")
 
         jewelry_type = _resolve_first_item_type(items, style, aliases, mapping)
         if jewelry_type:
-            jewelry_text = mapping.get("jewelry", {}).get(jewelry_type, "")
+            jewelry_text = (_resolve_option_selection(mapping.get("jewelry", {}), jewelry_type) or {}).get("prompt", "")
             if jewelry_text:
                 parts.append(f"\nJEWELRY TYPE: {jewelry_type}\n{jewelry_text}")
 
         size_label = _resolve_first_item_size(items)
         if size_label:
-            size_text = mapping.get("jewelry_size", {}).get(size_label, "")
+            size_text = (_resolve_option_selection(mapping.get("jewelry_size", {}), size_label) or {}).get("prompt", "")
             if size_text:
                 parts.append(f"\nJEWELRY SIZE: {size_label}\n{size_text}")
 
         camera = style.get("camera") or style.get("camera_style")
-        camera_text = mapping.get("camera", {}).get(camera, "")
+        resolved_camera = _resolve_option_selection(mapping.get("camera", {}), str(camera or ""))
+        camera_text = (resolved_camera or {}).get("prompt", "")
         if camera and camera_text:
-            parts.append(f"\nCAMERA STYLE: {camera}\n{camera_text}")
+            parts.append(f"\nCAMERA STYLE: {resolved_camera['label'] if resolved_camera else camera}\n{camera_text}")
 
         image_style = style.get("image_style")
-        image_style_text = mapping.get("image_style", {}).get(image_style, "")
+        resolved_image_style = _resolve_option_selection(mapping.get("image_style", {}), str(image_style or ""))
+        image_style_text = (resolved_image_style or {}).get("prompt", "")
         if image_style and image_style_text:
-            parts.append(f"\nSTYLE: {image_style}\n{image_style_text}")
+            parts.append(f"\nSTYLE: {resolved_image_style['label'] if resolved_image_style else image_style}\n{image_style_text}")
 
         parts.append(f"\n{texts.get('quality', '')}")
         prompt = "\n".join(parts)
@@ -401,7 +467,7 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
 
         background = _normalize_background_label(style.get("background"), background_aliases, mapping)
         background_color = str(style.get("studioColorHex") or "")
-        background_text = mapping.get("background", {}).get(background, "")
+        background_text = (_resolve_option_selection(mapping.get("background", {}), background) or {}).get("prompt", "")
         if background and background_text:
             if "{color}" in background_text and background_color:
                 background_text = background_text.replace("{color}", background_color)
@@ -417,33 +483,38 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
             ("lighting", "LIGHTING"),
         ):
             selected = style.get(field)
-            description = mapping.get(field, {}).get(selected, "")
+            resolved_option = _resolve_option_selection(mapping.get(field, {}), str(selected or ""))
+            description = (resolved_option or {}).get("prompt", "")
             if selected and description:
                 parts.append(f"{title}\n{selected} — {description}")
 
         jewelry_text = f"Base prompt — {texts.get('jewelry_base', '')}"
         jewelry_type = _resolve_first_item_type(items, style, aliases, mapping)
         if jewelry_type:
-            description = mapping.get("jewelry", {}).get(jewelry_type, "")
+            description = (_resolve_option_selection(mapping.get("jewelry", {}), jewelry_type) or {}).get("prompt", "")
             if description:
                 jewelry_text += f"\n{description}"
         parts.append(f"JEWELRY\n{jewelry_text}")
 
         size_label = _resolve_first_item_size(items)
         if size_label:
-            size_text = mapping.get("jewelry_size", {}).get(size_label, "")
+            size_text = (_resolve_option_selection(mapping.get("jewelry_size", {}), size_label) or {}).get("prompt", "")
             if size_text:
                 parts.append(f"SCALE & PROPORTION\n{size_text}")
 
         camera = style.get("camera") or style.get("camera_style")
-        camera_text = mapping.get("camera", {}).get(camera, "")
+        resolved_camera = _resolve_option_selection(mapping.get("camera", {}), str(camera or ""))
+        camera = resolved_camera["label"] if resolved_camera else camera
+        camera_text = (resolved_camera or {}).get("prompt", "")
         if camera and camera_text:
             parts.append(f"CAMERA\n{camera} — {camera_text}")
 
         style_text = f"Base prompt — {texts.get('style_base', '')}"
         image_style = style.get("image_style")
         if image_style:
-            image_style_text = mapping.get("image_style", {}).get(image_style, "")
+            resolved_image_style = _resolve_option_selection(mapping.get("image_style", {}), str(image_style or ""))
+            image_style = resolved_image_style["label"] if resolved_image_style else image_style
+            image_style_text = (resolved_image_style or {}).get("prompt", "")
             if image_style_text:
                 style_text += f"\n{image_style} — {image_style_text}"
         parts.append(f"STYLE\n{style_text}")
@@ -581,12 +652,12 @@ def _render_pure_jewelry_sections(definition: dict[str, Any], payload: dict[str,
             selected = str(style.get(category_id) or "").strip()
             if not selected or selected == "None":
                 continue
-            option_entry = (options or {}).get(selected)
-            if option_entry is None:
+            resolved_option = _resolve_option_selection(options or {}, selected)
+            if resolved_option is None:
                 continue
-            prompt = _option_prompt(option_entry, color_hex)
+            prompt = _option_prompt(resolved_option["raw"], color_hex)
             if prompt:
-                parts.append(f"\n{category_name}: {selected}\n{prompt}")
+                parts.append(f"\n{category_name}: {resolved_option['label']}\n{prompt}")
 
     parts.append(f"\n{definition.get('quality', '')}")
     prompt = "\n".join(parts)
@@ -714,6 +785,51 @@ def render_default_task(task_type: str, payload: dict[str, Any]) -> dict[str, An
     raise PromptRouteNotFound(f"No prompt route matched task_type={task_type}")
 
 
+def _resolve_default_task_row(task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    registry = get_default_registry()
+    engines = {engine["slug"]: engine for engine in registry["engines"]}
+    routes = [
+        route
+        for route in registry["routes"]
+        if route.get("task_type") == task_type and route.get("is_active", True)
+    ]
+    routes.sort(key=lambda row: (int(row.get("priority") or 0), str(row.get("slug") or "")))
+
+    for route in routes:
+        if not _match_rules(payload, route.get("match_rules")):
+            continue
+        engine = engines.get(route.get("engine_slug"))
+        if not engine:
+            continue
+        version = engine.get("initial_version") or {}
+        return {
+            "route": route,
+            "engine": engine,
+            "version": version,
+        }
+
+    raise PromptRouteNotFound(f"No prompt route matched task_type={task_type}")
+
+
+def resolve_prompt_task_row(
+    task_type: str,
+    payload: dict[str, Any],
+    *,
+    client=None,
+    allow_defaults_fallback: bool = True,
+) -> dict[str, Any]:
+    try:
+        hydrated_rows = _load_task_rows_from_store(task_type, client=client)
+        for row in hydrated_rows:
+            if _match_rules(payload, row["route"].get("match_rules")):
+                return row
+        raise PromptRouteNotFound(f"No prompt route matched task_type={task_type}")
+    except Exception:
+        if allow_defaults_fallback:
+            return _resolve_default_task_row(task_type, payload)
+        raise
+
+
 def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
     """Seed the prompt registry tables with default engines and routes if needed."""
 
@@ -728,6 +844,56 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
     registry = get_default_registry()
     inserted_any = False
     engine_ids_by_slug: dict[str, str] = {}
+    task_ids_by_key: dict[str, str] = {}
+
+    for task_seed in registry.get("tasks", []):
+        task_key = str(task_seed.get("key") or "").strip()
+        if not task_key:
+            continue
+        try:
+            existing_task = (
+                store.table("prompt_tasks").select("*").eq("key", task_key).limit(1).execute().data or []
+            )
+        except Exception:
+            existing_task = []
+        if existing_task:
+            existing_defaults = existing_task[0].get("display_defaults") or {}
+            wanted_defaults = _json_safe(task_seed.get("display_defaults") or {})
+            if wanted_defaults and existing_defaults != wanted_defaults:
+                try:
+                    store.table("prompt_tasks").update({"display_defaults": wanted_defaults}).eq(
+                        "id", existing_task[0]["id"]
+                    ).execute()
+                except Exception:
+                    pass
+            task_ids_by_key[task_key] = existing_task[0]["id"]
+            continue
+
+        parent_task_key = str(task_seed.get("parent_task_key") or "").strip()
+        parent_task_id = task_ids_by_key.get(parent_task_key) if parent_task_key else None
+        try:
+            created_task = (
+                store.table("prompt_tasks")
+                .insert(
+                    {
+                        "key": task_key,
+                        "name": task_seed["name"],
+                        "description": task_seed.get("description"),
+                        "surface": task_seed.get("surface"),
+                        "display_defaults": _json_safe(task_seed.get("display_defaults") or {}),
+                        "parent_task_id": parent_task_id,
+                        "is_active": True,
+                    }
+                )
+                .execute()
+                .data
+                or []
+            )
+        except Exception:
+            created_task = []
+        if created_task:
+            task_ids_by_key[task_key] = created_task[0]["id"]
+            inserted_any = True
 
     for engine_seed in registry["engines"]:
         slug = str(engine_seed["slug"])
@@ -738,6 +904,23 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
 
         if existing:
             engine_row = existing[0]
+            selector_updates = {
+                "selector_pill_label": engine_seed.get("selector_pill_label"),
+                "selector_title": engine_seed.get("selector_title"),
+                "selector_description": engine_seed.get("selector_description"),
+                "selector_badge": engine_seed.get("selector_badge"),
+                "selector_image_key": engine_seed.get("selector_image_key"),
+                "selector_badge_image_key": engine_seed.get("selector_badge_image_key"),
+            }
+            if any(
+                selector_updates[key] != engine_row.get(key)
+                for key in selector_updates
+                if selector_updates[key] is not None
+            ):
+                try:
+                    store.table("prompt_engines").update(selector_updates).eq("id", engine_row["id"]).execute()
+                except Exception:
+                    pass
             engine_ids_by_slug[slug] = engine_row["id"]
             versions = (
                 store.table("prompt_engine_versions")
@@ -756,6 +939,9 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
                             "engine_id": engine_row["id"],
                             "version_number": int(version_seed["version_number"]),
                             "status": version_seed["status"],
+                            "version_name": version_seed.get("version_name"),
+                            "public_version_key": version_seed.get("public_version_key")
+                            or f"v{int(version_seed['version_number'])}",
                             "change_note": version_seed.get("change_note"),
                             "definition": _json_safe(version_seed["definition"]),
                             "sample_input": _json_safe(version_seed.get("sample_input") or {}),
@@ -767,11 +953,15 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
                 )
                 if created_version:
                     store.table("prompt_engines").update(
-                        {"published_version_id": created_version[0]["id"]}
+                        {
+                            "published_version_id": created_version[0]["id"],
+                            "active_version_id": created_version[0]["id"],
+                        }
                     ).eq("id", engine_row["id"]).execute()
                     inserted_any = True
             continue
 
+        task_key = str(engine_seed.get("task_key") or engine_seed["task_type"])
         created_engine = (
             store.table("prompt_engines")
             .insert(
@@ -780,7 +970,17 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
                     "name": engine_seed["name"],
                     "description": engine_seed.get("description"),
                     "task_type": engine_seed["task_type"],
+                    "task_id": task_ids_by_key.get(task_key),
                     "renderer_key": engine_seed["renderer_key"],
+                    "public_engine_key": engine_seed.get("public_engine_key"),
+                    "is_user_selectable": bool(engine_seed.get("is_user_selectable", False)),
+                    "sort_order": int(engine_seed.get("sort_order") or 100),
+                    "selector_pill_label": engine_seed.get("selector_pill_label"),
+                    "selector_title": engine_seed.get("selector_title"),
+                    "selector_description": engine_seed.get("selector_description"),
+                    "selector_badge": engine_seed.get("selector_badge"),
+                    "selector_image_key": engine_seed.get("selector_image_key"),
+                    "selector_badge_image_key": engine_seed.get("selector_badge_image_key"),
                     "input_schema": _json_safe(engine_seed.get("input_schema") or {}),
                     "output_schema": _json_safe(engine_seed.get("output_schema") or {}),
                     "labels": _json_safe(engine_seed.get("labels") or {}),
@@ -803,6 +1003,9 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
                     "engine_id": engine_row["id"],
                     "version_number": int(version_seed["version_number"]),
                     "status": version_seed["status"],
+                    "version_name": version_seed.get("version_name"),
+                    "public_version_key": version_seed.get("public_version_key")
+                    or f"v{int(version_seed['version_number'])}",
                     "change_note": version_seed.get("change_note"),
                     "definition": _json_safe(version_seed["definition"]),
                     "sample_input": _json_safe(version_seed.get("sample_input") or {}),
@@ -814,7 +1017,10 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
         )
         if created_version:
             store.table("prompt_engines").update(
-                {"published_version_id": created_version[0]["id"]}
+                {
+                    "published_version_id": created_version[0]["id"],
+                    "active_version_id": created_version[0]["id"],
+                }
             ).eq("id", engine_row["id"]).execute()
         inserted_any = True
 
@@ -839,11 +1045,13 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
             engine_id = engine_rows[0]["id"]
             engine_ids_by_slug[engine_slug] = engine_id
 
+        task_key = str(route_seed.get("task_key") or route_seed["task_type"])
         store.table("prompt_task_routes").insert(
             {
                 "slug": slug,
                 "name": route_seed["name"],
                 "task_type": route_seed["task_type"],
+                "task_id": task_ids_by_key.get(task_key),
                 "priority": int(route_seed.get("priority") or 100),
                 "is_active": bool(route_seed.get("is_active", True)),
                 "match_rules": _json_safe(route_seed.get("match_rules") or {}),
@@ -899,8 +1107,9 @@ def _load_task_rows_from_store(task_type: str, *, client=None) -> list[dict[str,
             version_ids.add(pinned)
             continue
         engine = engines_by_id.get(route.get("engine_id"))
-        if engine and engine.get("published_version_id"):
-            version_ids.add(engine["published_version_id"])
+        active_version_id = _engine_active_version_id(engine or {})
+        if active_version_id:
+            version_ids.add(active_version_id)
 
     versions = []
     if version_ids:
@@ -915,7 +1124,7 @@ def _load_task_rows_from_store(task_type: str, *, client=None) -> list[dict[str,
         engine = engines_by_id.get(route.get("engine_id"))
         if not engine:
             continue
-        version_id = route.get("pinned_version_id") or engine.get("published_version_id")
+        version_id = route.get("pinned_version_id") or _engine_active_version_id(engine)
         version = versions_by_id.get(version_id)
         if not version:
             continue
@@ -943,13 +1152,10 @@ def resolve_prompt_task(
 ) -> dict[str, Any]:
     """Resolve and render the active prompt engine for a task."""
 
-    try:
-        hydrated_rows = _load_task_rows_from_store(task_type, client=client)
-        for row in hydrated_rows:
-            if _match_rules(payload, row["route"].get("match_rules")):
-                return render_engine_version(row["engine"], row["version"], payload)
-        raise PromptRouteNotFound(f"No prompt route matched task_type={task_type}")
-    except Exception:
-        if allow_defaults_fallback:
-            return render_default_task(task_type, payload)
-        raise
+    row = resolve_prompt_task_row(
+        task_type,
+        payload,
+        client=client,
+        allow_defaults_fallback=allow_defaults_fallback,
+    )
+    return render_engine_version(row["engine"], row["version"], payload)

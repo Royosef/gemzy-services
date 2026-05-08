@@ -193,17 +193,46 @@ CREATE INDEX IF NOT EXISTS image_edit_feedback_edit_job_idx
 CREATE INDEX IF NOT EXISTS image_edit_feedback_rating_idx
   ON image_edit_feedback (rating);
 
+CREATE TABLE IF NOT EXISTS prompt_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT,
+  surface TEXT,
+  parent_task_id UUID REFERENCES prompt_tasks(id) ON DELETE SET NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  display_defaults JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  updated_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS prompt_tasks_surface_idx
+  ON prompt_tasks (surface, is_active);
+
 CREATE TABLE IF NOT EXISTS prompt_engines (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   description TEXT,
   task_type TEXT NOT NULL,
+  task_id UUID REFERENCES prompt_tasks(id) ON DELETE SET NULL,
   renderer_key TEXT NOT NULL,
+  public_engine_key TEXT,
+  is_user_selectable BOOLEAN NOT NULL DEFAULT FALSE,
+  sort_order INTEGER NOT NULL DEFAULT 100,
+  selector_pill_label TEXT,
+  selector_title TEXT,
+  selector_description TEXT,
+  selector_badge TEXT,
+  selector_image_key TEXT,
+  selector_badge_image_key TEXT,
   input_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
   output_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
   labels JSONB NOT NULL DEFAULT '{}'::jsonb,
   published_version_id UUID,
+  active_version_id UUID,
   created_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
   updated_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -213,11 +242,22 @@ CREATE TABLE IF NOT EXISTS prompt_engines (
 CREATE INDEX IF NOT EXISTS prompt_engines_task_type_idx
   ON prompt_engines (task_type);
 
+CREATE INDEX IF NOT EXISTS prompt_engines_task_id_idx
+  ON prompt_engines (task_id, is_user_selectable, sort_order);
+
+CREATE INDEX IF NOT EXISTS prompt_engines_public_engine_key_idx
+  ON prompt_engines (public_engine_key);
+
+CREATE INDEX IF NOT EXISTS prompt_engines_active_version_id_idx
+  ON prompt_engines (active_version_id);
+
 CREATE TABLE IF NOT EXISTS prompt_engine_versions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   engine_id UUID NOT NULL REFERENCES prompt_engines(id) ON DELETE CASCADE,
   version_number INTEGER NOT NULL CHECK (version_number > 0),
   status prompt_engine_status NOT NULL DEFAULT 'draft',
+  version_name TEXT,
+  public_version_key TEXT NOT NULL,
   change_note TEXT,
   definition JSONB NOT NULL DEFAULT '{}'::jsonb,
   sample_input JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -242,6 +282,18 @@ BEGIN
       REFERENCES prompt_engine_versions(id)
       ON DELETE SET NULL;
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'prompt_engines_active_version_id_fkey'
+  ) THEN
+    ALTER TABLE prompt_engines
+      ADD CONSTRAINT prompt_engines_active_version_id_fkey
+      FOREIGN KEY (active_version_id)
+      REFERENCES prompt_engine_versions(id)
+      ON DELETE SET NULL;
+  END IF;
 END$$;
 
 CREATE TABLE IF NOT EXISTS prompt_task_routes (
@@ -249,6 +301,7 @@ CREATE TABLE IF NOT EXISTS prompt_task_routes (
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   task_type TEXT NOT NULL,
+  task_id UUID REFERENCES prompt_tasks(id) ON DELETE SET NULL,
   priority INTEGER NOT NULL DEFAULT 100,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   match_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -263,6 +316,9 @@ CREATE TABLE IF NOT EXISTS prompt_task_routes (
 
 CREATE INDEX IF NOT EXISTS prompt_task_routes_task_idx
   ON prompt_task_routes (task_type, is_active, priority);
+
+CREATE INDEX IF NOT EXISTS prompt_task_routes_task_id_idx
+  ON prompt_task_routes (task_id, is_active, priority);
 
 CREATE TABLE IF NOT EXISTS push_tokens (
   token TEXT PRIMARY KEY,
@@ -397,6 +453,18 @@ BEGIN
   ) THEN
     CREATE TRIGGER image_edit_feedback_set_updated_at
       BEFORE UPDATE ON image_edit_feedback
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'prompt_tasks_set_updated_at'
+  ) THEN
+    CREATE TRIGGER prompt_tasks_set_updated_at
+      BEFORE UPDATE ON prompt_tasks
       FOR EACH ROW
       EXECUTE FUNCTION set_updated_at();
   END IF;

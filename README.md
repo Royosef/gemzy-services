@@ -21,6 +21,10 @@ pip install -r requirements.dev.txt
 uvicorn server.main:app --reload
 ```
 
+This service is also the backend for `gemzy-dashboard`, including prompt admin,
+funnel flows, dashboard email tools, public tracking routes, and webhooks. Run
+it alongside `gemzy-dashboard/pnpm dev`.
+
 ### Generation server
 
 ```sh

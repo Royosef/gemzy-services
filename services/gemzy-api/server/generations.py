@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from postgrest.exceptions import APIError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from prompting.registry import ensure_default_prompt_registry
+from prompting.registry import ensure_default_prompt_registry, resolve_prompt_task_row
 from prompting.ui_catalog import resolve_generation_ui_catalog
 
 from .auth import get_current_user
@@ -171,6 +171,49 @@ IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
         "prompt": "Sharpen the fine details of the image - the edges of the jewelry, the texture of the fabric, the clarity of the skin - while avoiding over-sharpening artifacts, halos, or unnatural crispness. The sharpening should feel like better focus, not digital processing.",
     },
 }
+
+
+def _edit_option_definitions_from_definition(definition: dict[str, Any]) -> dict[str, dict[str, str]]:
+    definitions: dict[str, dict[str, str]] = {}
+    raw_options = definition.get("editOptions") or []
+    if not isinstance(raw_options, list):
+        return definitions
+    for raw_option in raw_options:
+        if not isinstance(raw_option, dict):
+            continue
+        option_id = str(raw_option.get("id") or "").strip()
+        label = str(raw_option.get("label") or "").strip()
+        category = str(raw_option.get("category") or "").strip()
+        prompt = str(raw_option.get("prompt") or "").strip()
+        if not option_id or not label or not category:
+            continue
+        definitions[option_id] = {
+            "label": label,
+            "category": category,
+            "prompt": prompt,
+        }
+    return definitions
+
+
+def _resolve_image_edit_option_definitions(
+    payload: CreateImageEditPayload,
+) -> dict[str, dict[str, str]]:
+    task_type = _image_edit_task_type(payload)
+    edit_style = _style_with_task_type(payload.source.style, task_type)
+    prompt_payload = {"request": {"style": edit_style}}
+    try:
+        matched_row = resolve_prompt_task_row(
+            task_type,
+            prompt_payload,
+            client=get_client(),
+            allow_defaults_fallback=True,
+        )
+    except Exception:
+        return IMAGE_EDIT_OPTIONS
+
+    definition = matched_row.get("version", {}).get("definition") or {}
+    resolved = _edit_option_definitions_from_definition(definition)
+    return resolved or IMAGE_EDIT_OPTIONS
 
 
 def _style_with_task_type(
@@ -943,17 +986,22 @@ def get_generation_ui_config() -> GenerationUiCatalogResponse:
     return GenerationUiCatalogResponse(**catalog)
 
 
-def _resolve_image_edit_instructions(edit_ids: list[str]) -> list[ImageEditInstructionPayload]:
+def _resolve_image_edit_instructions(
+    edit_ids: list[str],
+    *,
+    option_definitions: dict[str, dict[str, str]] | None = None,
+) -> list[ImageEditInstructionPayload]:
     seen: set[str] = set()
     instructions: list[ImageEditInstructionPayload] = []
     unknown: list[str] = []
+    option_definitions = option_definitions or IMAGE_EDIT_OPTIONS
 
     for edit_id in edit_ids:
         normalized = edit_id.strip()
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
-        option = IMAGE_EDIT_OPTIONS.get(normalized)
+        option = option_definitions.get(normalized)
         if option is None:
             unknown.append(normalized)
             continue
@@ -1090,7 +1138,11 @@ async def create_image_edit(
             detail="Image editing requires the Pro plan.",
         )
 
-    instructions = _resolve_image_edit_instructions(payload.edits)
+    option_definitions = _resolve_image_edit_option_definitions(payload)
+    instructions = _resolve_image_edit_instructions(
+        payload.edits,
+        option_definitions=option_definitions,
+    )
     required_credits = _calculate_image_edit_cost(instructions)
     target_collection_id = _resolve_image_edit_target_collection_id(payload, user)
 

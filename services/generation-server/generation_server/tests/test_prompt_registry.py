@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("GENERATION_APP_URL", "https://app.example")
 
 from prompting import (  # noqa: E402
+    PROMPT_TASK_ON_MODEL,
     PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
     PROMPT_TASK_PLANNER_ENRICH,
     resolve_prompt_task,
@@ -22,7 +23,7 @@ def test_resolve_prompt_task_falls_back_to_default_registry_for_v45() -> None:
             "request": {
                 "model": {"slug": "model"},
                 "style": {
-                    "prompt_version": "v4.5",
+                    "public_version_key": "v4.5",
                     "background": "White Studio",
                     "camera": "Portrait",
                     "image_style": "Natural",
@@ -64,3 +65,26 @@ def test_resolve_prompt_task_builds_planner_enrich_prompt_bundle() -> None:
     assert "expert social media manager" in rendered["system_instruction"]
     assert "Persona Name: Maya" in rendered["user_prompt"]
     assert "Available Locations: studio, cafe" in rendered["user_prompt"]
+
+
+def test_resolve_prompt_task_supports_task_first_on_model_registry() -> None:
+    rendered = resolve_prompt_task(
+        PROMPT_TASK_ON_MODEL,
+        {
+            "request": {
+                "model": {"slug": "model"},
+                "style": {
+                    "task_type": "on-model",
+                    "public_version_key": "v4.5",
+                    "background": "White Studio",
+                    "camera": "Portrait",
+                    "image_style": "Natural",
+                },
+                "looks": 1,
+                "items": [{"type": "Ring", "size": "Small"}],
+            }
+        },
+    )
+
+    assert rendered["prompts"]
+    assert "White Studio" in rendered["prompts"][0]

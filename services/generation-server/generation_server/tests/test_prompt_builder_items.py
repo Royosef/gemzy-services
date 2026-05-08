@@ -94,7 +94,7 @@ def test_prompt_partial_item_info():
 
 def test_prompt_includes_per_item_type_guidance():
     req = _base_request()
-    req.style["prompt_version"] = "v4.5"
+    req.style["public_version_key"] = "v4.5"
     req.items = [
         GenerationItem(id="i1", type="Necklace", size="Small", uploadId="u1"),
         GenerationItem(id="i2", type="Ring", size="Medium", uploadId="u2"),
@@ -109,7 +109,7 @@ def test_prompt_includes_per_item_type_guidance():
 
 def test_prompt_includes_medium_size_guidance():
     req = _base_request()
-    req.style["prompt_version"] = "v4.5"
+    req.style["public_version_key"] = "v4.5"
     req.items = [
         GenerationItem(id="i1", type="Ring", size="Medium", uploadId="u1"),
     ]
@@ -123,7 +123,7 @@ def test_prompt_includes_medium_size_guidance():
 def test_v45_prompt_uses_html_section_labels():
     req = _base_request()
     req.style.update({
-        "prompt_version": "v4.5",
+        "public_version_key": "v4.5",
         "background": "White Studio",
         "camera": "Portrait",
         "image_style": "Natural",
@@ -141,10 +141,27 @@ def test_v45_prompt_uses_html_section_labels():
     assert "QUALITY CONTROL" in prompt
 
 
+def test_v45_prompt_accepts_option_ids():
+    req = _base_request()
+    req.style.update({
+        "public_version_key": "v4.5",
+        "background": "white-studio",
+        "camera": "portrait",
+        "image_style": "natural",
+    })
+    req.items = [GenerationItem(id="i1", type="Ring", size="Small", uploadId="u1")]
+
+    prompt = build_prompts(req)[0]
+
+    assert "\nSCENE: White Studio\n" in prompt
+    assert "\nCAMERA STYLE: Portrait\n" in prompt
+    assert "\nSTYLE: Natural\n" in prompt
+
+
 def test_prompt_v2_labels_still_expand_with_v2_version():
     req = _base_request()
     req.style.update({
-        "prompt_version": "v2",
+        "public_version_key": "v2",
         "background": "Blue Hour Editorial",
         "hair": "Natural Hair",
         "outfit": "Minimal Luxury",

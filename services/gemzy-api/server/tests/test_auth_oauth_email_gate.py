@@ -91,7 +91,7 @@ def test_oauth_login_allows_whitelisted_email(monkeypatch: pytest.MonkeyPatch, a
 
     # Whitelist check passes
     monkeypatch.setattr(auth, "_is_email_allowed", lambda email, client=None: email == "allowed@example.com")
-    async def _exchange(code: str) -> dict[str, str]:
+    async def _exchange(code: str, redirect_uri: str | None = None) -> dict[str, str]:
         return {"id_token": token, "access_token": "atk"}
 
     monkeypatch.setattr(auth, "exchange_google_code", _exchange)
@@ -110,7 +110,7 @@ def test_oauth_login_blocks_non_whitelisted_email(monkeypatch: pytest.MonkeyPatc
     token = _jwt_with_email("blocked@example.com")
 
     monkeypatch.setattr(auth, "_is_email_allowed", lambda email, client=None: False)
-    async def _exchange(code: str) -> dict[str, str]:
+    async def _exchange(code: str, redirect_uri: str | None = None) -> dict[str, str]:
         return {"id_token": token, "access_token": "atk"}
 
     monkeypatch.setattr(auth, "exchange_google_code", _exchange)
@@ -127,7 +127,7 @@ def test_oauth_login_blocks_when_email_missing(monkeypatch: pytest.MonkeyPatch, 
     # token without email field
     token = "header.{}.sig"
     monkeypatch.setattr(auth, "_is_email_allowed", lambda email, client=None: True)
-    async def _exchange(code: str) -> dict[str, str]:
+    async def _exchange(code: str, redirect_uri: str | None = None) -> dict[str, str]:
         return {"id_token": token, "access_token": "atk"}
 
     monkeypatch.setattr(auth, "exchange_google_code", _exchange)

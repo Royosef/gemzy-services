@@ -100,10 +100,20 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
             model_image = await resolve_model_image(request, settings)
             model_image_mime_type = "image/png"
             
-        rendered_prompt = resolve_prompt_task(
-            PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
-            {"request": request.model_dump(mode="json")},
-        )
+        prompt_payload = {"request": request.model_dump(mode="json")}
+        requested_task_type = str(request.style.get("task_type", "")).strip()
+        resolved_task_type = requested_task_type or PROMPT_TASK_IMAGE_GENERATION_COMPOSE
+        try:
+            rendered_prompt = resolve_prompt_task(
+                resolved_task_type,
+                prompt_payload,
+                allow_defaults_fallback=False,
+            )
+        except Exception:
+            rendered_prompt = resolve_prompt_task(
+                PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
+                prompt_payload,
+            )
         prompts = list(rendered_prompt.get("prompts") or [])
         negative_prompt = str(rendered_prompt.get("negative_prompt") or "")
 

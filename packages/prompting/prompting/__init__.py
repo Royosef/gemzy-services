@@ -3,8 +3,12 @@
 from .defaults import (
     PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
     PROMPT_TASK_IMAGE_GENERATION_DEFAULTS,
+    PROMPT_TASK_ON_MODEL,
+    PROMPT_TASK_ON_MODEL_EDIT,
     PROMPT_TASK_PLANNER_ENRICH,
     PROMPT_TASK_PLANNER_RANK,
+    PROMPT_TASK_PURE_JEWELRY,
+    PROMPT_TASK_PURE_JEWELRY_EDIT,
     get_default_registry,
 )
 from .registry import (
@@ -19,8 +23,12 @@ from .registry import (
 __all__ = [
     "PROMPT_TASK_IMAGE_GENERATION_COMPOSE",
     "PROMPT_TASK_IMAGE_GENERATION_DEFAULTS",
+    "PROMPT_TASK_ON_MODEL",
+    "PROMPT_TASK_ON_MODEL_EDIT",
     "PROMPT_TASK_PLANNER_ENRICH",
     "PROMPT_TASK_PLANNER_RANK",
+    "PROMPT_TASK_PURE_JEWELRY",
+    "PROMPT_TASK_PURE_JEWELRY_EDIT",
     "PromptRegistryError",
     "PromptRouteNotFound",
     "ensure_default_prompt_registry",

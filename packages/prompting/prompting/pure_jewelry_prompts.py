@@ -282,7 +282,7 @@ _PURE_JEWELRY_STYLES = {
 def is_v52_pure_jewelry_style(style: dict[str, str] | None) -> bool:
     if not style:
         return False
-    version = (style.get("prompt_version") or "").strip().lower()
+    version = (style.get("public_version_key") or "").strip().lower()
     style_type = (style.get("style_type") or "").strip()
     return version == V52_PROMPT_VERSION or style_type in _PURE_JEWELRY_STYLES
 

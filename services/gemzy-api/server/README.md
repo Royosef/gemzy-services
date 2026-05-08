@@ -106,6 +106,15 @@ on the prompt registry tables. Existing databases should run
 `../sql/018_add_prompt_registry.sql` before using `/prompt-engines` or
 `/generations/ui-config`.
 
+The prompt-admin dashboard client talks to this FastAPI service directly with a
+Supabase bearer token. For local development that means:
+
+- Run the dashboard frontend separately from this API service.
+- Point `VITE_GEMZY_API_URL` in `gemzy-dashboard` at this service, typically
+  `http://localhost:8000`.
+- Set `CORS_ORIGINS` here to include the dashboard origin, typically
+  `http://localhost:5173`.
+
 Monthly credit allocations are configured through `plan_settings`. By default
 the migration seeds the Free, Starter, Pro, and Designer plans with 40, 120,
 600, and 1400 credits respectively. Update those rows to change allocations

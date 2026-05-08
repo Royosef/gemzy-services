@@ -624,17 +624,19 @@ async def oauth_callback(request: Request, provider: str) -> RedirectResponse:
 
     return RedirectResponse(f"{url}?id_token={id_token}&state={state}")
 
-async def exchange_google_code(auth_code: str) -> dict:
+async def exchange_google_code(auth_code: str, redirect_uri: str | None = None) -> dict:
+    data = {
+        "code": auth_code,
+        "client_id": GOOGLE_WEB_CLIENT_ID,
+        "client_secret": GOOGLE_WEB_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+    }
+    if redirect_uri:
+        data["redirect_uri"] = redirect_uri
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post(
             "https://oauth2.googleapis.com/token",
-            data={
-                "code": auth_code,
-                "client_id": GOOGLE_WEB_CLIENT_ID,
-                "client_secret": GOOGLE_WEB_CLIENT_SECRET,
-                "grant_type": "authorization_code",
-                "redirect_uri": "",  # allowed when no web redirect uri is used :contentReference[oaicite:2]{index=2}
-            },
+            data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
@@ -663,7 +665,7 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
         res = sb.auth.sign_in_with_id_token(payload)
         
     elif data.provider == "google":
-        tokens = await exchange_google_code(data.token)
+        tokens = await exchange_google_code(data.token, data.redirectUri)
         id_token = tokens.get("id_token")
         access_token = tokens.get("access_token")
         if not id_token or not access_token:
