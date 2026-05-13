@@ -7,6 +7,7 @@ from typing import Iterable, List, Literal, Protocol
 from prompting import PROMPT_TASK_IMAGE_GENERATION_COMPOSE, resolve_prompt_task
 
 from .callbacks import CallbackEvent, safe_send_event
+from .prompt_builder import build_negative_prompt, build_prompts
 from .comfy_runner import ComfyWorkflowRunner
 from .google_runner import GoogleGeminiError, GoogleGeminiRunner
 from .models import GenerationJobPayload, GenerationResult
@@ -74,7 +75,7 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
         product_images: List[bytes] = [decode_upload_image(upload.base64) for upload in request.uploads]
         product_image_mime_types = [upload.mimeType or "image/png" for upload in request.uploads]
         
-        task_type = request.style.get("task_type", "")
+        task_type = request.style.get("task_type", request.model.slug) 
         is_image_edit = (
             request.model.slug == "image-edit"
             or task_type == "image_edit"
@@ -84,10 +85,12 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
             request.model.imageBase64 or request.model.imageUri
         )
 
-        # Pure Jewelry uses uploaded imagery as its reference model image.
+        # Pure-jewelry generations already receive the uploaded jewelry as
+        # product_images. Forwarding the same upload as model_image makes the
+        # backend behave like an on-model/reference-image request.
         if request.model.slug == "pure-jewelry":
-            model_image = product_images[0] if product_images else b""
-            model_image_mime_type = product_image_mime_types[0] if product_image_mime_types else "image/png"
+            model_image = b""
+            model_image_mime_type = None
         # Edited on-model jobs can optionally carry forward the original model
         # reference. If it is absent, keep the previous edit behavior.
         elif is_image_edit and has_model_reference:
@@ -103,6 +106,7 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
         prompt_payload = {"request": request.model_dump(mode="json")}
         requested_task_type = str(request.style.get("task_type", "")).strip()
         resolved_task_type = requested_task_type or PROMPT_TASK_IMAGE_GENERATION_COMPOSE
+
         try:
             rendered_prompt = resolve_prompt_task(
                 resolved_task_type,
@@ -114,8 +118,13 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
                 PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
                 prompt_payload,
             )
-        prompts = list(rendered_prompt.get("prompts") or [])
-        negative_prompt = str(rendered_prompt.get("negative_prompt") or "")
+
+        if request.style.get("task_type", "") == "":
+            prompts = build_prompts(request)
+            negative_prompt = build_negative_prompt(items=request.items)
+        else:
+            prompts = list(rendered_prompt.get("prompts") or [])
+            negative_prompt = str(rendered_prompt.get("negative_prompt") or "")
 
         runner = _get_runner()
 

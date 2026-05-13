@@ -78,8 +78,6 @@ GENERATION_JOB_FAILURE_MESSAGE = "Generation failed. Please try again."
 IMAGE_EDIT_START_FAILURE_MESSAGE = "Unable to start image edit right now. Please try again."
 IMAGE_EDIT_JOB_FAILURE_MESSAGE = "Image edit failed. Please try again."
 DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
-IMAGE_EDIT_BASE_COST = 8
-IMAGE_EDIT_UPSCALE_COST = 14
 BASE_TASK_TYPE_ON_MODEL = "on-model"
 BASE_TASK_TYPE_PURE_JEWELRY = "pure-jewelry"
 IMAGE_EDIT_HERO_PROMPT = (
@@ -964,8 +962,8 @@ def get_generation_config() -> dict[str, Any]:
     return {
         "costPerLook": COST_PER_LOOK,
         "imageEditCost": {
-            "base": IMAGE_EDIT_BASE_COST,
-            "upscale": IMAGE_EDIT_UPSCALE_COST,
+            "base": COST_PER_LOOK["1080p"],
+            "upscale": COST_PER_LOOK["4K"],
         },
     }
 
@@ -1027,12 +1025,16 @@ def _resolve_image_edit_instructions(
     return instructions
 
 
-def _calculate_image_edit_cost(instructions: list[ImageEditInstructionPayload]) -> int:
-    return (
-        IMAGE_EDIT_UPSCALE_COST
+def _calculate_image_edit_cost(
+    instructions: list[ImageEditInstructionPayload],
+    quality: str | None,
+) -> int:
+    target_quality = (
+        "4K"
         if any(instruction.id == "upscale_image" for instruction in instructions)
-        else IMAGE_EDIT_BASE_COST
+        else (quality or "1080p")
     )
+    return COST_PER_LOOK.get(target_quality, COST_PER_LOOK["1080p"])
 
 
 def _build_image_edit_prompt(
@@ -1143,7 +1145,7 @@ async def create_image_edit(
         payload.edits,
         option_definitions=option_definitions,
     )
-    required_credits = _calculate_image_edit_cost(instructions)
+    required_credits = _calculate_image_edit_cost(instructions, payload.quality)
     target_collection_id = _resolve_image_edit_target_collection_id(payload, user)
 
     edit_trial_applied = False

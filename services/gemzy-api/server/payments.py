@@ -196,6 +196,19 @@ def _ms_to_iso(ms: int | None) -> str | None:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    """Parse an ISO timestamp into a UTC datetime."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _get_event_timestamp(event: dict) -> int | None:
     """Extract event timestamp in milliseconds for ordering."""
     # RevenueCat provides event_timestamp_ms in some events
@@ -381,6 +394,7 @@ async def rc_webhook(request: Request) -> dict:
     current_purchased_credits = current_profile.get("purchased_credits", 0)
     last_event_ms = current_profile.get("rc_last_event_ms")
     current_expires_at = current_profile.get("subscription_expires_at")
+    incoming_expires_iso = _ms_to_iso(expiration_ms)
     should_reset_credit_schedule = False
     credit_pack_sync_marker_to_remember: str | None = None
     credit_pack_sync_metadata: dict | None = None
@@ -391,11 +405,13 @@ async def rc_webhook(request: Request) -> dict:
         print(f"[RC Webhook] Ignoring out-of-order event for {app_user_id}")
         return {"status": "ignored", "reason": "out_of_order_event"}
     
-    # Calculate new expiration (always use max of current and incoming)
+    # Most lifecycle events should preserve the farthest-known active expiration.
+    # Expiration/refund-style events are authoritative and may shorten access.
     new_expires_at = current_expires_at
-    if expiration_ms:
-        incoming_expires_iso = _ms_to_iso(expiration_ms)
-        if not current_expires_at or (incoming_expires_iso and incoming_expires_iso > current_expires_at):
+    if incoming_expires_iso:
+        if event_type in {"CANCELLATION", "EXPIRATION", "REFUND"}:
+            new_expires_at = incoming_expires_iso
+        elif not current_expires_at or incoming_expires_iso > current_expires_at:
             new_expires_at = incoming_expires_iso
     
     # Base update data (always update event timestamp and expiration)
@@ -492,35 +508,30 @@ async def rc_webhook(request: Request) -> dict:
     # CANCELLATION
     # ---------------------
     elif event_type == "CANCELLATION":
-        # Ignore - auto-renew off, not immediate revoke
-        # User keeps access until expiration
-        if update_data:
-            sb.table("profiles").update(update_data).eq("id", app_user_id).execute()
-        print(f"[RC Webhook] CANCELLATION: {app_user_id} - ignoring (access continues until expiration)")
-        logger.info(f"[RC Webhook] CANCELLATION: {app_user_id} - ignoring")
-        return {"status": "ok", "action": "ignored_cancellation"}
+        now = datetime.now(timezone.utc)
+        expires_dt = _parse_iso_datetime(incoming_expires_iso or new_expires_at)
+
+        if expires_dt and expires_dt <= now:
+            free_allocation = get_plan_initial_credits("Free")
+            update_data["plan"] = "Free"
+            update_data["credits"] = free_allocation
+            should_reset_credit_schedule = True
+            print(f"[RC Webhook] CANCELLATION: {app_user_id} - expired immediately, downgrading to Free")
+            logger.info(f"[RC Webhook] CANCELLATION: {app_user_id} - expired immediately, downgraded to Free")
+        else:
+            print(f"[RC Webhook] CANCELLATION: {app_user_id} - access continues until expiration")
+            logger.info(f"[RC Webhook] CANCELLATION: {app_user_id} - access continues until expiration")
     
     # ---------------------
     # EXPIRATION
     # ---------------------
-    elif event_type == "EXPIRATION":
-        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    elif event_type in {"EXPIRATION", "REFUND"}:
+        now = datetime.now(timezone.utc)
+        effective_expiration = _parse_iso_datetime(incoming_expires_iso or new_expires_at)
         
-        # Guard 1: Check if subscription_expires_at is in the future
-        if new_expires_at:
-            try:
-                expires_dt = datetime.fromisoformat(new_expires_at.replace("Z", "+00:00"))
-                if expires_dt > datetime.now(timezone.utc):
-                    print(f"[RC Webhook] EXPIRATION: {app_user_id} - ignoring, expires_at still in future")
-                    logger.info(f"[RC Webhook] EXPIRATION: {app_user_id} - ignoring, subscription still active")
-                    return {"status": "ignored", "reason": "subscription_still_active"}
-            except Exception:
-                pass
-        
-        # Guard 2: Check if expiration_at_ms from event is in the future
-        if expiration_ms and expiration_ms > now_ms:
-            print(f"[RC Webhook] EXPIRATION: {app_user_id} - ignoring, expiration_at_ms in future")
-            logger.info(f"[RC Webhook] EXPIRATION: {app_user_id} - ignoring, expiration_at_ms in future")
+        if effective_expiration and effective_expiration > now:
+            print(f"[RC Webhook] {event_type}: {app_user_id} - ignoring, subscription still active")
+            logger.info(f"[RC Webhook] {event_type}: {app_user_id} - ignoring, subscription still active")
             return {"status": "ignored", "reason": "subscription_still_active"}
         
         # Actually expired - downgrade to Free
@@ -529,8 +540,8 @@ async def rc_webhook(request: Request) -> dict:
         update_data["credits"] = free_allocation
         should_reset_credit_schedule = True
         
-        print(f"[RC Webhook] EXPIRATION: {app_user_id} - downgrading to Free")
-        logger.info(f"[RC Webhook] EXPIRATION: {app_user_id} - downgrading to Free")
+        print(f"[RC Webhook] {event_type}: {app_user_id} - downgrading to Free")
+        logger.info(f"[RC Webhook] {event_type}: {app_user_id} - downgrading to Free")
     
     # ---------------------
     # VIRTUAL_CURRENCY_TRANSACTION

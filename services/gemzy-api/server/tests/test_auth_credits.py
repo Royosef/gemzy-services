@@ -83,6 +83,43 @@ def test_ensure_monthly_credits_resets_due_balance(
     assert "next_credit_reset_at" in update_call["operation"][1]
 
 
+def test_ensure_monthly_credits_downgrades_expired_paid_plan(
+    monkeypatch,
+):
+    client = _FakeClient()
+
+    monkeypatch.setattr(auth, "get_client", lambda: client)
+    monkeypatch.setattr(auth, "get_plan_initial_credits", lambda plan: 5 if plan == "Free" else 40)
+    monkeypatch.setattr(
+        auth,
+        "schedule_next_credit_reset",
+        lambda now=None: "2026-06-01T00:00:00Z",
+    )
+
+    profile = auth._ensure_monthly_credits(
+        "user-1",
+        "Designer",
+        {
+            "plan": "Designer",
+            "credits": 40,
+            "subscription_expires_at": "2026-04-14T17:51:00+00:00",
+            "next_credit_reset_at": "2026-05-01T00:00:00Z",
+        },
+    )
+
+    assert profile["plan"] == "Free"
+    assert profile["credits"] == 5
+    assert profile["next_credit_reset_at"] == "2026-06-01T00:00:00Z"
+
+    update_call = client.calls[0]
+    assert update_call["table"] == "profiles"
+    assert update_call["operation"][1] == {
+        "plan": "Free",
+        "credits": 5,
+        "next_credit_reset_at": "2026-06-01T00:00:00Z",
+    }
+
+
 def test_build_user_state_uses_profile_as_source_of_truth():
     state = auth._build_user_state(
         "user-1",

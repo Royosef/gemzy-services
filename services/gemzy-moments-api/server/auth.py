@@ -204,10 +204,29 @@ def _ensure_monthly_credits(
     profile = dict(profile)
     metadata = dict(metadata)
     now = datetime.now(timezone.utc)
+    normalized_plan = normalize_plan(plan)
     last_reset = _parse_iso_datetime(
         metadata.get("creditsRenewedAt") or profile.get("creditsRenewedAt")
     )
-    allocation = get_plan_initial_credits(plan)
+    expires_at = _parse_iso_datetime(profile.get("subscription_expires_at"))
+
+    if normalized_plan != "Free" and expires_at is not None and expires_at <= now:
+        allocation = get_plan_initial_credits("Free")
+        sb = get_client()
+        sb.table("profiles").update({"plan": "Free", "credits": allocation}).eq("id", user_id).execute()
+        profile["plan"] = "Free"
+        profile["credits"] = allocation
+        metadata["plan"] = "Free"
+        metadata["plan_tier"] = "Free"
+        metadata["credits"] = allocation
+        metadata["creditsRenewedAt"] = now.isoformat()
+        try:
+            update_user_metadata(user_id, metadata, client=sb)
+        except Exception:  # pragma: no cover - admin API optional
+            pass
+        return profile, metadata
+
+    allocation = get_plan_initial_credits(normalized_plan)
 
     if last_reset is None or _month_start(last_reset) < _month_start(now):
         sb = get_client()

@@ -65,6 +65,14 @@ nonce_store: dict[str, str] = {}
 logger = logging.getLogger(__name__)
 DEFAULT_STYLE_TRIAL_REMAINING_USES = 3
 DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
+INVALID_REFRESH_ERROR_HINTS = (
+    "invalid refresh token",
+    "refresh token not found",
+    "refresh token has been revoked",
+    "refresh token already used",
+    "session expired",
+    "invalid grant",
+)
 
 TEST_LOGIN_USER_ID = "286b4672-8f6e-44cc-945f-7a3d113c50b2"
 TEST_LOGIN_EMAIL = "testgemzy@gemzy.co"
@@ -216,6 +224,15 @@ def _clean_text(value: object | None) -> str | None:
     return cleaned or None
 
 
+def _is_invalid_refresh_error(exc: Exception) -> bool:
+    """Return True when a refresh failure should sign the user out."""
+
+    detail = str(exc).strip().lower()
+    if not detail:
+        return False
+    return any(hint in detail for hint in INVALID_REFRESH_ERROR_HINTS)
+
+
 def _auth_user_created_at(user: object | None) -> str | None:
     """Return an auth user's created_at value as an ISO string when available."""
 
@@ -331,9 +348,25 @@ def _ensure_monthly_credits(
 
     profile = dict(profile)
     now = datetime.now(timezone.utc)
+    normalized_plan = normalize_plan(plan)
     next_reset = _parse_iso_datetime(profile.get("next_credit_reset_at"))
-    allocation = get_plan_initial_credits(plan)
+    expires_at = _parse_iso_datetime(profile.get("subscription_expires_at"))
     sb = get_client()
+
+    if normalized_plan != "Free" and expires_at is not None and expires_at <= now:
+        allocation = get_plan_initial_credits("Free")
+        new_next_reset = schedule_next_credit_reset(now=now)
+        sb.table("profiles").update({
+            "plan": "Free",
+            "credits": allocation,
+            "next_credit_reset_at": new_next_reset,
+        }).eq("id", user_id).execute()
+        profile["plan"] = "Free"
+        profile["credits"] = allocation
+        profile["next_credit_reset_at"] = new_next_reset
+        return profile
+
+    allocation = get_plan_initial_credits(normalized_plan)
 
     if next_reset is None:
         # Older profiles may not have a reset timestamp yet. Initialize the schedule
@@ -541,8 +574,15 @@ def refresh_token(data: RefreshRequest) -> Token:
     try:
         res = sb.auth.refresh_session(data.refresh)
     except Exception as exc:  # pragma: no cover - network failure
+        status_code = (
+            status.HTTP_401_UNAUTHORIZED
+            if _is_invalid_refresh_error(exc)
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+        detail = str(exc) if status_code == status.HTTP_401_UNAUTHORIZED else "Unable to refresh session right now"
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+            status_code=status_code,
+            detail=detail,
         ) from exc
     if res.session is None:
         raise HTTPException(

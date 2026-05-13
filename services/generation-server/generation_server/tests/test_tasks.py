@@ -85,6 +85,45 @@ def _payload(*, model_image_uri: str | None, model_image_base64: str | None) -> 
     )
 
 
+def _pure_jewelry_payload() -> GenerationJobPayload:
+    return GenerationJobPayload(
+        job=JobMetadata(
+            id="job-pure-jewelry",
+            userId="user-1",
+            callbackUrl="https://app.example/callback",
+            looks=1,
+        ),
+        user=UserState(id="user-1", name="User", plan="Pro", credits=10),
+        request=GenerationRequest(
+            uploads=[
+                GenerationUpload(
+                    id="upload-1",
+                    uri="https://example.com/jewelry.png",
+                    base64="c291cmNlLWltYWdl",
+                    mimeType="image/png",
+                )
+            ],
+            model=GenerationModel(
+                id="pure-jewelry-model",
+                slug="pure-jewelry",
+                name="Pure Jewelry",
+                planTier="Free",
+                imageUri=None,
+                imageBase64=None,
+            ),
+            style={"task_type": "pure-jewelry", "public_version_key": "v5.2"},
+            mode="ADVANCED",
+            aspect="1:1",
+            dims=GenerationDimensions(w=1080, h=1080),
+            looks=1,
+            quality="2k",
+            plan="Pro",
+            creditsNeeded=1,
+            promptOverrides=[],
+        ),
+    )
+
+
 class _Runner:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -245,3 +284,36 @@ async def test_generation_task_resolution_tries_task_first_then_legacy_fallback(
         (tasks.PROMPT_TASK_IMAGE_GENERATION_COMPOSE, True),
     ]
     assert runner.calls[0]["prompt"] == "legacy prompt"
+
+
+@pytest.mark.anyio
+async def test_pure_jewelry_generation_does_not_forward_model_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _Runner()
+
+    async def _unexpected_resolve_model_image(_request, _settings):
+        raise AssertionError("resolve_model_image should not run for pure-jewelry generations")
+
+    async def _safe_send_event(_settings, _job, _event):
+        return None
+
+    monkeypatch.setattr(tasks, "get_settings", _settings)
+    monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
+    monkeypatch.setattr(tasks, "resolve_model_image", _unexpected_resolve_model_image)
+    monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
+    monkeypatch.setattr(
+        tasks,
+        "resolve_prompt_task",
+        lambda *_args, **_kwargs: {
+            "prompts": ["pure jewelry prompt"],
+            "negative_prompt": "neg",
+        },
+    )
+
+    await tasks.process_generation_job(_pure_jewelry_payload())
+
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["product_images"] == [b"source-image"]
+    assert runner.calls[0]["model_image"] == b""
+    assert runner.calls[0]["model_image_mime_type"] is None

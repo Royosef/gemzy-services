@@ -119,6 +119,42 @@ def test_refresh_token_uses_user_client(monkeypatch) -> None:
     assert user_client.auth.refresh_calls == ["refresh-me"]
 
 
+def test_refresh_token_returns_503_for_transient_refresh_failures(monkeypatch) -> None:
+    class _TransientAuthClient:
+        def refresh_session(self, _refresh: str) -> SimpleNamespace:
+            raise RuntimeError("temporary auth backend outage")
+
+    transient_client = SimpleNamespace(auth=_TransientAuthClient())
+
+    monkeypatch.setattr(auth, "create_user_client", lambda: transient_client)
+
+    try:
+        auth.refresh_token(auth.RefreshRequest(refresh="refresh-me"))
+    except auth.HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail == "Unable to refresh session right now"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected refresh_token to raise HTTPException")
+
+
+def test_refresh_token_returns_401_for_invalid_refresh_failures(monkeypatch) -> None:
+    class _InvalidRefreshAuthClient:
+        def refresh_session(self, _refresh: str) -> SimpleNamespace:
+            raise RuntimeError("Invalid Refresh Token: Already Used")
+
+    invalid_client = SimpleNamespace(auth=_InvalidRefreshAuthClient())
+
+    monkeypatch.setattr(auth, "create_user_client", lambda: invalid_client)
+
+    try:
+        auth.refresh_token(auth.RefreshRequest(refresh="refresh-me"))
+    except auth.HTTPException as exc:
+        assert exc.status_code == 401
+        assert exc.detail == "Invalid Refresh Token: Already Used"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected refresh_token to raise HTTPException")
+
+
 def test_oauth_login_uses_user_client(monkeypatch) -> None:
     service_client = _FailingServiceClient()
     user_client = _UserClient()

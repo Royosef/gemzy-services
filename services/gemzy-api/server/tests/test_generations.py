@@ -353,10 +353,47 @@ def test_image_edit_charges_credits_after_trials_are_used(
     body = response.json()
     assert body["editTrialApplied"] is False
     assert body["editModeTrialEditsRemaining"] is None
-    assert body["remainingCredits"] == 12
-    assert body["editCreditCost"] == 8
-    assert credit_client.credits["user-123"] == 12
+    assert body["remainingCredits"] == 16
+    assert body["editCreditCost"] == 4
+    assert credit_client.credits["user-123"] == 16
     assert credit_client.edit_trials["user-123"] == 0
+
+
+def test_image_edit_upscale_charges_as_4k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    app.dependency_overrides[generations.get_current_user] = lambda: UserState(
+        id="user-123",
+        name="Test User",
+        plan="Pro",
+        credits=20,
+        editModeTrialEditsRemaining=0,
+    )
+    test_client = TestClient(app)
+    credit_client = _CreditClient(
+        credits={"user-123": 20},
+        edit_trials={"user-123": 0},
+    )
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: _MockAsyncClient())
+    monkeypatch.setattr("server.generations._persist_generation_result", lambda job, result: result)
+    monkeypatch.setattr("server.generations._publish_image_edit_completed_notification", lambda job: None)
+    reset_jobs()
+
+    payload = _image_edit_payload()
+    payload["quality"] = "2K"
+    payload["edits"] = ["upscale_image"]
+
+    response = test_client.post("/generations/edits", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["editTrialApplied"] is False
+    assert body["remainingCredits"] == 13
+    assert body["editCreditCost"] == 7
+    assert credit_client.credits["user-123"] == 13
 
 
 def test_image_edit_targets_source_collection(monkeypatch: pytest.MonkeyPatch) -> None:
