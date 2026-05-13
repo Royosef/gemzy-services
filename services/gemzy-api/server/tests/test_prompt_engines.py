@@ -419,3 +419,27 @@ def test_list_prompt_management_tasks_groups_engines_and_routes(
     assert body[0]["engines"][0]["versions"][0]["publicVersionKey"] == "v4.5"
     assert body[0]["routes"][0]["engineSlug"] == "on-model-v4-5"
     assert body[1]["parentTaskKey"] == "on-model"
+
+
+def test_prompt_engine_routes_respect_prod_target_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _build_app(
+        monkeypatch,
+        UserState(id="admin-1", credits=10, isAdmin=True),
+    )
+    seen: list[str] = []
+
+    def record_client() -> _StubClient:
+        seen.append(prompt_engines.get_prompt_target_env())
+        return _StubClient()
+
+    monkeypatch.setattr(prompt_engines, "get_client", record_client)
+
+    response = client.get(
+        "/prompt-engines",
+        headers={"x-prompt-target-env": "prod"},
+    )
+
+    assert response.status_code == 200
+    assert "prod" in seen

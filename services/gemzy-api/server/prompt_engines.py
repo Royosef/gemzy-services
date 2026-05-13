@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Response, status
 
 from prompting.registry import ensure_default_prompt_registry, render_engine_version
 
@@ -26,9 +26,28 @@ from .schemas import (
     UpdatePromptTaskRoutePayload,
     UserState,
 )
-from .supabase_client import get_client
+from .supabase_client import (
+    get_prompt_registry_client,
+    get_prompt_target_env,
+    set_prompt_target_env,
+)
 
-router = APIRouter(prefix="/prompt-engines", tags=["prompt-engines"])
+
+def _prompt_target_env_dependency(
+    x_prompt_target_env: str | None = Header(default=None),
+) -> None:
+    set_prompt_target_env(x_prompt_target_env)
+
+
+def get_client():
+    return get_prompt_registry_client()
+
+
+router = APIRouter(
+    prefix="/prompt-engines",
+    tags=["prompt-engines"],
+    dependencies=[Depends(_prompt_target_env_dependency)],
+)
 
 
 def _ensure_admin(current: UserState) -> None:
