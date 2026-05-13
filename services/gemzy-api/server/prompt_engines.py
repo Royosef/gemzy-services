@@ -43,6 +43,29 @@ def get_client():
     return get_prompt_registry_client()
 
 
+def _prompt_registry_audit_fields(
+    current: UserState,
+    *,
+    created: bool = False,
+    updated: bool = False,
+) -> dict[str, str]:
+    actor_id = str(current.id or "").strip()
+    if not actor_id or not (created or updated):
+        return {}
+    try:
+        rows = get_client().table("profiles").select("id").eq("id", actor_id).limit(1).execute().data or []
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+    fields: dict[str, str] = {}
+    if created:
+        fields["created_by"] = actor_id
+    if updated:
+        fields["updated_by"] = actor_id
+    return fields
+
+
 router = APIRouter(
     prefix="/prompt-engines",
     tags=["prompt-engines"],
@@ -442,8 +465,7 @@ def create_prompt_engine(
                 "input_schema": data.inputSchema,
                 "output_schema": data.outputSchema,
                 "labels": data.labels,
-                "created_by": current.id,
-                "updated_by": current.id,
+                **_prompt_registry_audit_fields(current, created=True, updated=True),
             }
         )
         .execute()
@@ -472,7 +494,7 @@ def create_prompt_engine(
                 "change_note": version_data.changeNote,
                 "definition": merged_definition,
                 "sample_input": version_data.sampleInput,
-                "created_by": current.id,
+                **_prompt_registry_audit_fields(current, created=True),
             }
         )
         .execute()
@@ -539,8 +561,7 @@ def create_prompt_route(
                 "engine_id": engine_row["id"],
                 "pinned_version_id": data.pinnedVersionId,
                 "notes": data.notes,
-                "created_by": current.id,
-                "updated_by": current.id,
+                **_prompt_registry_audit_fields(current, created=True, updated=True),
             }
         )
         .execute()
@@ -563,7 +584,7 @@ def update_prompt_route(
 
     _ensure_admin(current)
     route = _require_route(route_id)
-    updates: dict[str, Any] = {"updated_by": current.id}
+    updates: dict[str, Any] = _prompt_registry_audit_fields(current, updated=True)
 
     if data.slug is not None:
         slug_rows = get_client().table("prompt_task_routes").select("id").eq("slug", data.slug).limit(1).execute().data or []
@@ -610,7 +631,10 @@ def delete_prompt_route(
     _ensure_admin(current)
     _require_route(route_id)
     get_client().table("prompt_task_routes").update(
-        {"is_active": False, "updated_by": current.id}
+        {
+            "is_active": False,
+            **_prompt_registry_audit_fields(current, updated=True),
+        }
     ).eq("id", route_id).execute()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -637,7 +661,7 @@ def update_prompt_engine(
 
     _ensure_admin(current)
     engine = _require_engine_ref(engine_ref)
-    updates: dict[str, Any] = {"updated_by": current.id}
+    updates: dict[str, Any] = _prompt_registry_audit_fields(current, updated=True)
 
     if data.slug is not None:
         slug_rows = get_client().table("prompt_engines").select("id").eq("slug", data.slug).limit(1).execute().data or []
@@ -721,7 +745,7 @@ def create_prompt_engine_version(
                 "change_note": data.changeNote,
                 "definition": merged_definition,
                 "sample_input": data.sampleInput,
-                "created_by": current.id,
+                **_prompt_registry_audit_fields(current, created=True),
             }
         )
         .execute()
@@ -788,7 +812,11 @@ def publish_prompt_engine_version(
     ).execute()
     sb.table("prompt_engine_versions").update({"status": "published"}).eq("id", version_id).execute()
     sb.table("prompt_engines").update(
-        {"published_version_id": version_id, "active_version_id": version_id, "updated_by": current.id}
+        {
+            "published_version_id": version_id,
+            "active_version_id": version_id,
+            **_prompt_registry_audit_fields(current, updated=True),
+        }
     ).eq("id", engine["id"]).execute()
     return _detail_response(_require_engine_ref(engine["id"]))
 

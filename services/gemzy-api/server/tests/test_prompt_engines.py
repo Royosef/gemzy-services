@@ -195,6 +195,39 @@ def test_create_prompt_engine_creates_initial_draft_version(
     assert stub.tables["prompt_engine_versions"][0]["public_version_key"] == "v3"
 
 
+def test_update_prompt_engine_skips_updated_by_when_registry_profile_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, stub = _build_app(
+        monkeypatch,
+        UserState(id="admin-1", credits=10, isAdmin=True),
+    )
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-1",
+            "slug": "custom-defaults",
+            "name": "Custom Defaults",
+            "task_type": "image_generation.defaults",
+            "renderer_key": "image_defaults_v1",
+            "public_engine_key": "custom-defaults",
+            "is_user_selectable": True,
+            "sort_order": 30,
+            "input_schema": {},
+            "output_schema": {},
+            "labels": {},
+        }
+    ]
+
+    response = client.patch(
+        "/prompt-engines/custom-defaults",
+        json={"name": "Updated Defaults"},
+    )
+
+    assert response.status_code == 200
+    assert stub.tables["prompt_engines"][0]["name"] == "Updated Defaults"
+    assert "updated_by" not in stub.tables["prompt_engines"][0]
+
+
 def test_publish_prompt_engine_version_marks_engine_active(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
