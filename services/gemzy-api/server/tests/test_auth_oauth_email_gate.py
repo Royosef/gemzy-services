@@ -69,6 +69,8 @@ def app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     fake_client = _FakeClient()
     monkeypatch.setattr(auth, "get_client", lambda: fake_client)
+    monkeypatch.setattr(auth, "create_user_client", lambda: fake_client)
+    monkeypatch.setattr(auth, "get_service_role_client", lambda fresh=False: fake_client)
     monkeypatch.setattr(auth, "_user_profile", lambda *_args, **_kwargs: {"plan": "Pro", "credits": 10})
     monkeypatch.setattr(auth, "clear_user_deactivation", lambda *a, **k: ({}, {"plan": "Pro"}, None))
     monkeypatch.setattr(auth, "get_plan_initial_credits", lambda *_: 0)
@@ -138,3 +140,20 @@ def test_oauth_login_blocks_when_email_missing(monkeypatch: pytest.MonkeyPatch, 
     )
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_oauth_login_allows_google_id_token_without_exchange(
+    monkeypatch: pytest.MonkeyPatch, app: TestClient
+) -> None:
+    token = _jwt_with_email("allowed@example.com")
+
+    monkeypatch.setattr(auth, "_verify_google_id_token", lambda received: {"email": "allowed@example.com"})
+
+    response = app.post(
+        "/auth/oauth",
+        json={"provider": "google", "token": token, "tokenType": "id_token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["user"]["id"] == "user-123"

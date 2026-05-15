@@ -255,3 +255,103 @@ def test_oauth_login_forwards_google_redirect_uri(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert captured["redirect_uri"] == "http://localhost:5173"
+
+
+def test_oauth_login_accepts_google_id_token_without_exchange(monkeypatch) -> None:
+    service_client = _FailingServiceClient()
+    user_client = _UserClient()
+
+    app = FastAPI()
+    app.include_router(auth.router)
+    client = TestClient(app)
+
+    verified: dict[str, str] = {}
+
+    async def _exchange(_code: str, redirect_uri: str | None = None) -> dict[str, str]:
+        raise AssertionError("exchange_google_code should not be called for direct id_token logins")
+
+    def _verify(token: str) -> dict[str, str]:
+        verified["token"] = token
+        return {"email": "oauth@example.com", "nonce": "nonce-123"}
+
+    monkeypatch.setattr(auth, "get_client", lambda: service_client)
+    monkeypatch.setattr(auth, "create_user_client", lambda: user_client)
+    monkeypatch.setattr(auth, "get_service_role_client", lambda fresh=False: service_client)
+    monkeypatch.setattr(auth, "exchange_google_code", _exchange)
+    monkeypatch.setattr(
+        auth,
+        "_verify_google_id_token",
+        _verify,
+    )
+    monkeypatch.setattr(auth, "_decode_jwt_payload", lambda token: {"email": "oauth@example.com"})
+    monkeypatch.setattr(
+        auth,
+        "_ensure_profile_exists",
+        lambda user_id, metadata, client=None, provided_name=None: ({"plan": "Pro", "credits": 10}, False),
+    )
+    monkeypatch.setattr(
+        auth,
+        "clear_user_deactivation",
+        lambda *args, **kwargs: ({}, {"plan": "Pro", "credits": 10}, None),
+    )
+    monkeypatch.setattr(auth, "_ensure_monthly_credits", lambda user_id, plan, profile: profile)
+    monkeypatch.setattr(
+        auth,
+        "_build_user_state",
+        lambda user_id, profile, metadata, created_at=None, auth_user=None: {
+            "id": user_id,
+            "plan": profile.get("plan"),
+            "credits": profile.get("credits", 0),
+        },
+    )
+
+    response = client.post(
+        "/auth/oauth",
+        json={
+            "provider": "google",
+            "token": "header.payload.sig",
+            "tokenType": "id_token",
+            "nonce": "nonce-123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert verified["token"] == "header.payload.sig"
+    assert user_client.auth.oauth_calls == [
+        {"provider": "google", "token": "header.payload.sig", "nonce": "nonce-123"}
+    ]
+
+
+def test_oauth_login_rejects_google_id_token_nonce_mismatch(monkeypatch) -> None:
+    service_client = _FailingServiceClient()
+    user_client = _UserClient()
+
+    app = FastAPI()
+    app.include_router(auth.router)
+    client = TestClient(app)
+
+    async def _exchange(_code: str, redirect_uri: str | None = None) -> dict[str, str]:
+        raise AssertionError("exchange_google_code should not be called for direct id_token logins")
+
+    monkeypatch.setattr(auth, "get_client", lambda: service_client)
+    monkeypatch.setattr(auth, "create_user_client", lambda: user_client)
+    monkeypatch.setattr(auth, "get_service_role_client", lambda fresh=False: service_client)
+    monkeypatch.setattr(auth, "exchange_google_code", _exchange)
+    monkeypatch.setattr(
+        auth,
+        "_verify_google_id_token",
+        lambda token: {"email": "oauth@example.com", "nonce": "different"},
+    )
+
+    response = client.post(
+        "/auth/oauth",
+        json={
+            "provider": "google",
+            "token": "header.payload.sig",
+            "tokenType": "id_token",
+            "nonce": "nonce-123",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Google nonce mismatch"
