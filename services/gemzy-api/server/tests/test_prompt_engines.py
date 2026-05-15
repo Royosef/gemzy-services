@@ -173,7 +173,11 @@ def test_create_prompt_engine_creates_initial_draft_version(
                 "versionName": "Draft V3",
                 "publicVersionKey": "v3",
                 "changeNote": "First draft",
-                "definition": {"negative_prompt": "soft blur"},
+                "definition": {
+                    "negative_prompt": "soft blur",
+                    "ui": {"sections": [{"id": "lighting", "options": []}]},
+                    "publicVersionKey": "should-be-stripped",
+                },
                 "sampleInput": {},
             },
         },
@@ -192,6 +196,8 @@ def test_create_prompt_engine_creates_initial_draft_version(
     assert body["versions"][0]["publicVersionKey"] == "v3"
     assert stub.tables["prompt_engines"][0]["slug"] == "custom-defaults"
     assert stub.tables["prompt_engine_versions"][0]["definition"]["negative_prompt"] == "soft blur"
+    assert stub.tables["prompt_engine_versions"][0]["definition"]["ui"]["sections"][0]["id"] == "lighting"
+    assert "publicVersionKey" not in stub.tables["prompt_engine_versions"][0]["definition"]
     assert stub.tables["prompt_engine_versions"][0]["public_version_key"] == "v3"
 
 
@@ -226,6 +232,76 @@ def test_update_prompt_engine_skips_updated_by_when_registry_profile_missing(
     assert response.status_code == 200
     assert stub.tables["prompt_engines"][0]["name"] == "Updated Defaults"
     assert "updated_by" not in stub.tables["prompt_engines"][0]
+
+
+def test_update_prompt_engine_version_preserves_ui_order_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, stub = _build_app(
+        monkeypatch,
+        UserState(id="admin-1", credits=10, isAdmin=True),
+    )
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-1",
+            "slug": "on-model-v4-5",
+            "name": "On Model V4.5",
+            "task_type": "image_generation.on_model",
+            "renderer_key": "on_model_sections_v1",
+            "public_engine_key": "on-model-v4-5",
+            "is_user_selectable": True,
+            "sort_order": 10,
+            "input_schema": {},
+            "output_schema": {},
+            "labels": {},
+        }
+    ]
+    stub.tables["prompt_engine_versions"] = [
+        {
+            "id": "version-1",
+            "engine_id": "engine-1",
+            "version_number": 1,
+            "status": "draft",
+            "version_name": "Draft",
+            "public_version_key": "v1",
+            "change_note": None,
+            "definition": {
+                "mapping": {"lighting": {"Backlit": "A", "Soft": "B"}},
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "lighting",
+                            "options": [{"label": "Backlit"}, {"label": "Soft"}],
+                        }
+                    ]
+                },
+            },
+            "sample_input": {},
+        }
+    ]
+
+    response = client.patch(
+        "/prompt-engines/on-model-v4-5/versions/version-1",
+        json={
+            "definition": {
+                "mapping": {"lighting": {"Soft": "B", "Backlit": "A"}},
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "lighting",
+                            "options": [{"label": "Soft"}, {"label": "Backlit"}],
+                        }
+                    ]
+                },
+                "publicVersionKey": "strip-me",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    saved_definition = stub.tables["prompt_engine_versions"][0]["definition"]
+    assert saved_definition["ui"]["sections"][0]["options"][0]["label"] == "Soft"
+    assert "publicVersionKey" not in saved_definition
 
 
 def test_publish_prompt_engine_version_marks_engine_active(

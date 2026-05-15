@@ -179,7 +179,6 @@ def _merge_version_definition(
     definition: dict[str, Any],
 ) -> dict[str, Any]:
     merged_definition = deepcopy(definition or {})
-    merged_definition.pop("ui", None)
     merged_definition.pop("publicVersionKey", None)
     return merged_definition
 
