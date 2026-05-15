@@ -76,6 +76,8 @@ def add_comfyui_directory_to_sys_path() -> str | None:
 class _PlaceholderImplementation:
     """Fallback implementation used in tests when ComfyUI is unavailable."""
 
+    supports_parallel_look_generation = False
+
     _PLACEHOLDER_PNG = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
     )
@@ -114,6 +116,8 @@ class _PlaceholderImplementation:
 
 class ComfyWorkflowRunner:
     """Facade that chooses between the real Comfy workflow and the placeholder."""
+
+    supports_parallel_look_generation = False
 
     def __init__(self, output_dir: str) -> None:
         self._output_dir = Path(output_dir)

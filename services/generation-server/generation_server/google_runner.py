@@ -21,6 +21,8 @@ class GoogleGeminiError(RuntimeError):
 class GoogleGeminiRunner:
     """Thin wrapper around the Google Gemini SDK suitable for our worker loop."""
 
+    supports_parallel_look_generation = True
+
     def __init__(
         self,
         api_key: str | None,

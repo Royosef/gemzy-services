@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -32,6 +33,7 @@ def _settings() -> Settings:
         gcs_bucket=None,
         gcs_credentials=None,
         worker_concurrency=1,
+        job_look_concurrency=1,
         callback_timeout=1,
         callback_max_attempts=1,
         callback_retry_delay=0,
@@ -125,6 +127,8 @@ def _pure_jewelry_payload() -> GenerationJobPayload:
 
 
 class _Runner:
+    supports_parallel_look_generation = True
+
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
@@ -317,3 +321,90 @@ async def test_pure_jewelry_generation_does_not_forward_model_image(
     assert runner.calls[0]["product_images"] == [b"source-image"]
     assert runner.calls[0]["model_image"] == b""
     assert runner.calls[0]["model_image_mime_type"] is None
+
+
+@pytest.mark.anyio
+async def test_multi_look_generation_can_run_in_parallel_while_preserving_result_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, str | None, int | None]] = []
+
+    class _BlockingRunner(_Runner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started: list[int] = []
+            self.second_started = tasks.asyncio.Event()
+
+        async def generate(
+            self,
+            *,
+            prompt: str,
+            negative_prompt: str,
+            product_images,
+            model_image: bytes,
+            product_image_mime_types=None,
+            model_image_mime_type=None,
+            aspect,
+            look_index: int,
+        ) -> bytes:
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "negative_prompt": negative_prompt,
+                    "product_images": list(product_images),
+                    "model_image": model_image,
+                    "product_image_mime_types": list(product_image_mime_types or []),
+                    "model_image_mime_type": model_image_mime_type,
+                    "aspect": aspect,
+                    "look_index": look_index,
+                }
+            )
+            self.started.append(look_index)
+            if look_index == 0:
+                await tasks.asyncio.wait_for(self.second_started.wait(), timeout=0.2)
+            else:
+                self.second_started.set()
+            return f"result-{look_index}".encode("utf-8")
+
+    runner = _BlockingRunner()
+
+    async def _resolve_model_image(_request, _settings):
+        return b"resolved-model-image"
+
+    async def _safe_send_event(_settings, _job, event):
+        encoded = event.result.base64 if event.result is not None else None
+        events.append((event.type, encoded, event.completedLooks))
+
+    base_payload = _payload(
+        model_image_uri="https://example.com/original-model.png",
+        model_image_base64="bW9kZWwtaW1hZ2U=",
+    )
+    payload = base_payload.model_copy(
+        update={
+            "job": base_payload.job.model_copy(update={"id": "job-2", "looks": 2}),
+            "request": base_payload.request.model_copy(update={"looks": 2}),
+        }
+    )
+
+    monkeypatch.setattr(tasks, "get_settings", lambda: replace(_settings(), job_look_concurrency=2))
+    monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
+    monkeypatch.setattr(tasks, "resolve_model_image", _resolve_model_image)
+    monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
+    monkeypatch.setattr(
+        tasks,
+        "resolve_prompt_task",
+        lambda *_args, **_kwargs: {
+            "prompts": ["first prompt", "second prompt"],
+            "negative_prompt": "neg",
+        },
+    )
+
+    await tasks.process_generation_job(payload)
+
+    assert runner.started == [0, 1]
+    assert events == [
+        ("started", None, None),
+        ("result", "result-0", 1),
+        ("result", "result-1", 2),
+        ("completed", None, 2),
+    ]

@@ -93,6 +93,8 @@ async def import_custom_nodes() -> None:
 class GemzyWorkflow:
     """Wrapper around the ComfyUI workflow exported for Gemzy."""
 
+    supports_parallel_look_generation = False
+
     def __init__(self, output_dir: str | Path) -> None:
         if torch is None:
             raise RuntimeError(

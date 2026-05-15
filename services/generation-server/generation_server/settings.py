@@ -33,6 +33,7 @@ class Settings:
     gcs_bucket: Optional[str]
     gcs_credentials: Optional[Dict[str, Any]]
     worker_concurrency: int
+    job_look_concurrency: int
     callback_timeout: float
     callback_max_attempts: int
     callback_retry_delay: float
@@ -86,6 +87,7 @@ class Settings:
                 )
             if not google_gemini_model:
                 google_gemini_model = "gemini-2.5-flash-image"
+        default_job_look_concurrency = "2" if provider == "google_gemini" else "1"
 
         return cls(
             shared_secret=shared_secret,
@@ -95,6 +97,15 @@ class Settings:
             gcs_bucket=os.getenv("GENERATION_MODEL_BUCKET"),
             gcs_credentials=gcs_credentials,
             worker_concurrency=max(1, int(os.getenv("GENERATION_WORKER_CONCURRENCY", "1"))),
+            job_look_concurrency=max(
+                1,
+                int(
+                    os.getenv(
+                        "GENERATION_JOB_LOOK_CONCURRENCY",
+                        default_job_look_concurrency,
+                    )
+                ),
+            ),
             callback_timeout=float(os.getenv("GENERATION_CALLBACK_TIMEOUT", "15")),
             callback_max_attempts=max(1, int(os.getenv("GENERATION_CALLBACK_MAX_ATTEMPTS", "5"))),
             callback_retry_delay=max(0.0, float(os.getenv("GENERATION_CALLBACK_RETRY_DELAY", "1"))),

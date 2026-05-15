@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Iterable, List, Literal, Protocol
 
 from prompting import PROMPT_TASK_IMAGE_GENERATION_COMPOSE, resolve_prompt_task
@@ -11,10 +12,12 @@ from .prompt_builder import build_negative_prompt, build_prompts
 from .comfy_runner import ComfyWorkflowRunner
 from .google_runner import GoogleGeminiError, GoogleGeminiRunner
 from .models import GenerationJobPayload, GenerationResult
-from .settings import get_settings
+from .settings import Settings, get_settings
 from .storage import ModelImageUnavailable, decode_upload_image, resolve_model_image
 
 class GenerationRunner(Protocol):
+    supports_parallel_look_generation: bool
+
     async def initialize(self) -> None:
         ...
 
@@ -60,6 +63,107 @@ def _get_runner() -> GenerationRunner:
 async def initialize_generation_backend():
     runner = _get_runner()
     await runner.initialize()
+
+
+def _resolve_job_look_concurrency(
+    settings: Settings,
+    runner: GenerationRunner,
+    look_count: int,
+) -> int:
+    configured = max(1, settings.job_look_concurrency)
+    if look_count <= 1 or configured <= 1:
+        return 1
+    if not getattr(runner, "supports_parallel_look_generation", False):
+        return 1
+    return min(configured, look_count)
+
+
+async def _generate_single_look(
+    *,
+    runner: GenerationRunner,
+    prompt: str,
+    negative_prompt: str,
+    product_images: list[bytes],
+    model_image: bytes,
+    product_image_mime_types: list[str],
+    model_image_mime_type: str | None,
+    aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
+    look_index: int,
+) -> bytes:
+    return await runner.generate(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        product_images=product_images,
+        model_image=model_image,
+        product_image_mime_types=product_image_mime_types,
+        model_image_mime_type=model_image_mime_type,
+        aspect=aspect,
+        look_index=look_index,
+    )
+
+
+async def generate_looks(
+    *,
+    settings: Settings,
+    runner: GenerationRunner,
+    prompts: list[str],
+    negative_prompt: str,
+    product_images: list[bytes],
+    model_image: bytes,
+    product_image_mime_types: list[str],
+    model_image_mime_type: str | None,
+    aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
+) -> list[bytes]:
+    if not prompts:
+        return []
+
+    concurrency = _resolve_job_look_concurrency(settings, runner, len(prompts))
+    if concurrency == 1:
+        results: list[bytes] = []
+        for index, prompt in enumerate(prompts):
+            results.append(
+                await _generate_single_look(
+                    runner=runner,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    product_images=product_images,
+                    model_image=model_image,
+                    product_image_mime_types=product_image_mime_types,
+                    model_image_mime_type=model_image_mime_type,
+                    aspect=aspect,
+                    look_index=index,
+                )
+            )
+        return results
+
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _run(index: int, prompt: str) -> bytes:
+        async with semaphore:
+            return await _generate_single_look(
+                runner=runner,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                product_images=product_images,
+                model_image=model_image,
+                product_image_mime_types=product_image_mime_types,
+                model_image_mime_type=model_image_mime_type,
+                aspect=aspect,
+                look_index=index,
+            )
+
+    tasks = [asyncio.create_task(_run(index, prompt)) for index, prompt in enumerate(prompts)]
+    try:
+        ordered_results: list[bytes] = []
+        for task in tasks:
+            ordered_results.append(await task)
+        return ordered_results
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def process_generation_job(payload: GenerationJobPayload) -> None:
@@ -119,6 +223,7 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
                 prompt_payload,
             )
 
+
         if request.style.get("task_type", "") == "":
             prompts = build_prompts(request)
             negative_prompt = build_negative_prompt(items=request.items)
@@ -128,17 +233,19 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
 
         runner = _get_runner()
 
-        for index, prompt in enumerate(prompts):
-            image_bytes = await runner.generate(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                product_images=product_images,
-                model_image=model_image,
-                product_image_mime_types=product_image_mime_types,
-                model_image_mime_type=model_image_mime_type,
-                aspect=request.aspect,
-                look_index=index,
-            )
+        generated_images = await generate_looks(
+            settings=settings,
+            runner=runner,
+            prompts=prompts,
+            negative_prompt=negative_prompt,
+            product_images=product_images,
+            model_image=model_image,
+            product_image_mime_types=product_image_mime_types,
+            model_image_mime_type=model_image_mime_type,
+            aspect=request.aspect,
+        )
+
+        for index, image_bytes in enumerate(generated_images):
             encoded = runner.encode_base64(image_bytes)
             await safe_send_event(
                 settings,

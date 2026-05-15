@@ -24,6 +24,7 @@ def _settings() -> Settings:
         gcs_bucket=None,
         gcs_credentials=None,
         worker_concurrency=1,
+        job_look_concurrency=1,
         callback_timeout=1,
         callback_max_attempts=3,
         callback_retry_delay=0,

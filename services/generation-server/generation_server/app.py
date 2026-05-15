@@ -19,7 +19,12 @@ from .models import (
 )
 from .job_queue import GenerationQueue
 from .settings import get_settings
-from .tasks import process_generation_job, initialize_generation_backend, _get_runner
+from .tasks import (
+    _get_runner,
+    generate_looks,
+    initialize_generation_backend,
+    process_generation_job,
+)
 from .llm_tasks import run_planner_enrichment, run_planner_ranking
 
 app = FastAPI(title="Gemzy Generation Server")
@@ -85,17 +90,19 @@ async def generate_sync(payload: GenerateSyncRequest, request: Request) -> Gener
         )
         reference_images = [base64.b64decode(item) for item in payload.reference_images_base64]
 
-        for index in range(payload.num_images):
-            image_bytes = await runner.generate(
-                prompt=payload.prompt,
-                negative_prompt=negative_prompt,
-                product_images=reference_images,
-                model_image=model_image,
-                product_image_mime_types=payload.reference_image_mime_types,
-                model_image_mime_type=payload.model_image_mime_type,
-                aspect=payload.aspect_ratio,
-                look_index=index,
-            )
+        generated_images = await generate_looks(
+            settings=_settings,
+            runner=runner,
+            prompts=[payload.prompt] * payload.num_images,
+            negative_prompt=negative_prompt,
+            product_images=reference_images,
+            model_image=model_image,
+            product_image_mime_types=payload.reference_image_mime_types,
+            model_image_mime_type=payload.model_image_mime_type,
+            aspect=payload.aspect_ratio,
+        )
+
+        for image_bytes in generated_images:
             encoded = runner.encode_base64(image_bytes)
             results.append({"url": f"data:image/jpeg;base64,{encoded}"})
             
