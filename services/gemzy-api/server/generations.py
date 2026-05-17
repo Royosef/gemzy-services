@@ -80,12 +80,18 @@ IMAGE_EDIT_JOB_FAILURE_MESSAGE = "Image edit failed. Please try again."
 DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
 BASE_TASK_TYPE_ON_MODEL = "on-model"
 BASE_TASK_TYPE_PURE_JEWELRY = "pure-jewelry"
-IMAGE_EDIT_HERO_PROMPT = (
+FALLBACK_IMAGE_EDIT_HERO_PROMPT = (
     "Generate this exact same image. Change nothing except the specific modifications stated below. "
     "Every element of the original image - the background, the scene, the lighting, the model, the pose, "
     "the outfit, the skin, the framing, the sharpness - is preserved exactly as it appears. "
     "If anything other than the stated changes is different from the original, the image is not ready."
 )
+
+FALLBACK_IMAGE_EDIT_PURE_JEWELRY_ADDENDUM = (
+    "The source was created as pure jewelry, so do not add or alter a model/person unless explicitly requested."
+)
+
+FALLBACK_IMAGE_EDIT_REQUESTED_EDITS_HEADING = "Requested edits:"
 
 IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
     "jewelry_smaller": {
@@ -193,9 +199,9 @@ def _edit_option_definitions_from_definition(definition: dict[str, Any]) -> dict
     return definitions
 
 
-def _resolve_image_edit_option_definitions(
+def _resolve_image_edit_definition(
     payload: CreateImageEditPayload,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, Any]:
     task_type = _image_edit_task_type(payload)
     edit_style = _style_with_task_type(payload.source.style, task_type)
     prompt_payload = {"request": {"style": edit_style}}
@@ -207,11 +213,30 @@ def _resolve_image_edit_option_definitions(
             allow_defaults_fallback=True,
         )
     except Exception:
-        return IMAGE_EDIT_OPTIONS
+        return {}
 
-    definition = matched_row.get("version", {}).get("definition") or {}
+    return matched_row.get("version", {}).get("definition") or {}
+
+
+def _resolve_image_edit_option_definitions(
+    payload: CreateImageEditPayload,
+) -> dict[str, dict[str, str]]:
+    definition = _resolve_image_edit_definition(payload)
     resolved = _edit_option_definitions_from_definition(definition)
     return resolved or IMAGE_EDIT_OPTIONS
+
+
+def _resolve_image_edit_prompt_config(definition: dict[str, Any] | None) -> dict[str, str]:
+    source = definition if isinstance(definition, dict) else {}
+    return {
+        "hero": str(source.get("hero") or FALLBACK_IMAGE_EDIT_HERO_PROMPT),
+        "pure_jewelry_addendum": str(
+            source.get("pure_jewelry_addendum") or FALLBACK_IMAGE_EDIT_PURE_JEWELRY_ADDENDUM
+        ),
+        "requested_edits_heading": str(
+            source.get("requested_edits_heading") or FALLBACK_IMAGE_EDIT_REQUESTED_EDITS_HEADING
+        ),
+    }
 
 
 def _style_with_task_type(
@@ -1040,14 +1065,15 @@ def _calculate_image_edit_cost(
 def _build_image_edit_prompt(
     payload: CreateImageEditPayload,
     instructions: list[ImageEditInstructionPayload],
+    *,
+    definition: dict[str, Any] | None = None,
 ) -> str:
-    lines = [IMAGE_EDIT_HERO_PROMPT]
+    prompt_config = _resolve_image_edit_prompt_config(definition)
+    lines = [prompt_config["hero"]]
     if payload.source.modelSlug == "pure-jewelry":
-        lines.append(
-            "The source was created as pure jewelry, so do not add or alter a model/person unless explicitly requested."
-        )
+        lines.append(prompt_config["pure_jewelry_addendum"])
 
-    lines.append("Requested edits:")
+    lines.append(prompt_config["requested_edits_heading"])
     for index, instruction in enumerate(instructions, start=1):
         lines.append(
             f"{index}. {instruction.label}: {instruction.prompt or instruction.label}"
@@ -1061,6 +1087,7 @@ def _build_image_edit_generation_payload(
     user: UserState,
     required_credits: int,
     instructions: list[ImageEditInstructionPayload],
+    definition: dict[str, Any] | None = None,
 ) -> CreateGenerationPayload:
     source_base_task_type = _image_edit_source_base_task_type(payload)
     edit_style = _style_with_task_type(
@@ -1105,7 +1132,7 @@ def _build_image_edit_generation_payload(
         quality=payload.quality,
         plan=user.plan or "Pro",
         creditsNeeded=required_credits,
-        promptOverrides=[_build_image_edit_prompt(payload, instructions)],
+        promptOverrides=[_build_image_edit_prompt(payload, instructions, definition=definition)],
     )
 
 
@@ -1140,7 +1167,8 @@ async def create_image_edit(
             detail="Image editing requires the Pro plan.",
         )
 
-    option_definitions = _resolve_image_edit_option_definitions(payload)
+    definition = _resolve_image_edit_definition(payload)
+    option_definitions = _edit_option_definitions_from_definition(definition) or IMAGE_EDIT_OPTIONS
     instructions = _resolve_image_edit_instructions(
         payload.edits,
         option_definitions=option_definitions,
@@ -1175,6 +1203,7 @@ async def create_image_edit(
         user=user,
         required_credits=required_credits,
         instructions=instructions,
+        definition=definition,
     )
     callback_url = _build_callback_url(job_id)
     target_url = _resolve_generation_url(payload.generationServerUrl)

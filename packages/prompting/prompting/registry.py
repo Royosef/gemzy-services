@@ -33,6 +33,27 @@ def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
+def _backfill_missing_dict_fields(
+    current: dict[str, Any],
+    defaults: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    merged = _json_safe(current)
+    changed = False
+    for key, value in defaults.items():
+        if key not in merged:
+            merged[key] = _json_safe(value)
+            changed = True
+    return merged, changed
+
+
+def _edit_definition_backfill(definition: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in definition.items()
+        if key in {"hero", "pure_jewelry_addendum", "requested_edits_heading"}
+    }
+
+
 @lru_cache(maxsize=1)
 def _get_store_client():
     try:
@@ -897,6 +918,7 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
 
     for engine_seed in registry["engines"]:
         slug = str(engine_seed["slug"])
+        version_seed = engine_seed["initial_version"]
         existing = (
             store.table("prompt_engines").select("*").eq("slug", slug).limit(1).execute().data
             or []
@@ -930,8 +952,30 @@ def ensure_default_prompt_registry(*, client=None, force: bool = False) -> bool:
                 .data
                 or []
             )
+            definition_backfill = {}
+            if slug in {"on-model-edit-default", "pure-jewelry-edit-default"}:
+                definition_backfill = _edit_definition_backfill(
+                    _json_safe(version_seed.get("definition") or {})
+                )
+            if definition_backfill:
+                for version in versions:
+                    current_definition = version.get("definition") or {}
+                    if not isinstance(current_definition, dict):
+                        continue
+                    merged_definition, changed = _backfill_missing_dict_fields(
+                        current_definition,
+                        definition_backfill,
+                    )
+                    if not changed:
+                        continue
+                    try:
+                        store.table("prompt_engine_versions").update(
+                            {"definition": merged_definition}
+                        ).eq("id", version["id"]).execute()
+                        inserted_any = True
+                    except Exception:
+                        pass
             if not versions:
-                version_seed = engine_seed["initial_version"]
                 created_version = (
                     store.table("prompt_engine_versions")
                     .insert(

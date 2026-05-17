@@ -513,6 +513,51 @@ def test_image_edit_forwards_source_metadata_and_real_model(
     assert captured_jobs[0].dims == {"w": 1080, "h": 1350}
 
 
+def test_build_image_edit_prompt_uses_registry_definition() -> None:
+    payload = generations.CreateImageEditPayload(**_image_edit_payload())
+    instructions = [
+        generations.ImageEditInstructionPayload(
+            id="jewelry_smaller",
+            label="Make the jewelry a bit smaller",
+            category="jewelry",
+            prompt="Reduce scale slightly.",
+        )
+    ]
+
+    prompt = generations._build_image_edit_prompt(
+        payload,
+        instructions,
+        definition={
+            "hero": "Registry hero",
+            "pure_jewelry_addendum": "Registry pure addendum",
+            "requested_edits_heading": "Registry edits heading",
+        },
+    )
+
+    assert prompt.startswith("Registry hero")
+    assert "Registry pure addendum" in prompt
+    assert "Registry edits heading" in prompt
+    assert "1. Make the jewelry a bit smaller: Reduce scale slightly." in prompt
+
+
+def test_build_image_edit_prompt_falls_back_when_definition_missing() -> None:
+    payload = generations.CreateImageEditPayload(**_image_edit_payload())
+    instructions = [
+        generations.ImageEditInstructionPayload(
+            id="jewelry_smaller",
+            label="Make the jewelry a bit smaller",
+            category="jewelry",
+            prompt="Reduce scale slightly.",
+        )
+    ]
+
+    prompt = generations._build_image_edit_prompt(payload, instructions, definition={})
+
+    assert prompt.startswith(generations.FALLBACK_IMAGE_EDIT_HERO_PROMPT)
+    assert generations.FALLBACK_IMAGE_EDIT_PURE_JEWELRY_ADDENDUM in prompt
+    assert generations.FALLBACK_IMAGE_EDIT_REQUESTED_EDITS_HEADING in prompt
+
+
 def test_result_metadata_preserves_generation_and_edit_metadata() -> None:
     job = GenerationJob(
         id="edit-job-1",

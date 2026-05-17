@@ -133,14 +133,46 @@ _ENGINE_SELECTOR_SEEDS = {
 }
 
 _ON_MODEL_SECTION_DISPLAY_DEFAULTS = {
-    "background": {"label": "Scene", "description": "Set your model's environment", "iconKey": "mountains"},
-    "emotion": {"label": "Emotion", "description": "Choose expression and mood", "iconKey": "smiley"},
-    "hair": {"label": "Hair", "description": "Style your model's hair", "iconKey": "hairdryer"},
-    "outfit": {"label": "Outfit", "description": "Pick outfit and styling", "iconKey": "coat-hanger"},
-    "pose": {"label": "Pose", "description": "Control pose and framing", "iconKey": "person-arms-spread"},
-    "lighting": {"label": "Lighting", "description": "Shape light and atmosphere", "iconKey": "sun"},
-    "camera": {"label": "Camera Style", "description": "Adjust angle and lens feel", "iconKey": "aperture"},
-    "image_style": {"label": "Style", "description": "Apply a visual style", "iconKey": "paint-brush"},
+    "background": {
+        "label": "Scene",
+        "description": "Set your model's environment",
+        "iconKey": "mountains",
+    },
+    "emotion": {
+        "label": "Emotion",
+        "description": "Choose expression and mood",
+        "iconKey": "smiley",
+    },
+    "hair": {
+        "label": "Hair",
+        "description": "Style your model's hair",
+        "iconKey": "hairdryer",
+    },
+    "outfit": {
+        "label": "Outfit",
+        "description": "Pick outfit and styling",
+        "iconKey": "coat-hanger",
+    },
+    "pose": {
+        "label": "Pose",
+        "description": "Control pose and framing",
+        "iconKey": "person-arms-spread",
+    },
+    "lighting": {
+        "label": "Lighting",
+        "description": "Shape light and atmosphere",
+        "iconKey": "sun",
+    },
+    "camera": {
+        "label": "Camera Style",
+        "description": "Adjust angle and lens feel",
+        "iconKey": "aperture",
+    },
+    "image_style": {
+        "label": "Style",
+        "description": "Apply a visual style",
+        "iconKey": "paint-brush",
+    },
 }
 
 _DEFAULT_ITEM_TYPE_LABELS = [
@@ -165,7 +197,10 @@ _DEFAULT_ITEM_SIZE_LABELS = ["Very Small", "Small", "Medium", "Big", "Very Big"]
 
 
 def _humanize_heading(value: str) -> str:
-    return " ".join(part.capitalize() for part in value.replace("&", " & ").replace("-", " ").split())
+    return " ".join(
+        part.capitalize()
+        for part in value.replace("&", " & ").replace("-", " ").split()
+    )
 
 
 def _slugify_label(value: str) -> str:
@@ -173,17 +208,26 @@ def _slugify_label(value: str) -> str:
     return normalized.strip("-")
 
 
-_DEFAULT_ITEM_TYPES = [{"id": _slugify_label(label), "label": label} for label in _DEFAULT_ITEM_TYPE_LABELS]
-_DEFAULT_ITEM_SIZES = [{"id": _slugify_label(label), "label": label} for label in _DEFAULT_ITEM_SIZE_LABELS]
+_DEFAULT_ITEM_TYPES = [
+    {"id": _slugify_label(label), "label": label} for label in _DEFAULT_ITEM_TYPE_LABELS
+]
+_DEFAULT_ITEM_SIZES = [
+    {"id": _slugify_label(label), "label": label} for label in _DEFAULT_ITEM_SIZE_LABELS
+]
 
 
 def _option_entry(label: str, option_definition: Any) -> dict[str, Any]:
     if isinstance(option_definition, dict):
         prompt = option_definition.get("prompt", "")
-        has_color = bool(option_definition.get("has_color") or option_definition.get("hasColor"))
-        color_label = option_definition.get("color_label") or option_definition.get("colorLabel")
+        has_color = bool(
+            option_definition.get("has_color") or option_definition.get("hasColor")
+        )
+        color_label = option_definition.get("color_label") or option_definition.get(
+            "colorLabel"
+        )
         return {
-            "id": str(option_definition.get("id") or "").strip() or _slugify_label(label),
+            "id": str(option_definition.get("id") or "").strip()
+            or _slugify_label(label),
             "label": str(option_definition.get("label") or label),
             "prompt": prompt,
             "has_color": has_color,
@@ -196,7 +240,9 @@ def _option_entry(label: str, option_definition: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_on_model_mapping(mapping: dict[str, dict[str, str]]) -> dict[str, dict[str, dict[str, Any]]]:
+def _normalize_on_model_mapping(
+    mapping: dict[str, dict[str, str]],
+) -> dict[str, dict[str, dict[str, Any]]]:
     normalized: dict[str, dict[str, dict[str, Any]]] = {}
     for section_id, option_map in mapping.items():
         normalized[section_id] = {
@@ -206,19 +252,25 @@ def _normalize_on_model_mapping(mapping: dict[str, dict[str, str]]) -> dict[str,
     return normalized
 
 
-def _normalize_pure_jewelry_styles(styles: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _normalize_pure_jewelry_styles(
+    styles: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     normalized: dict[str, dict[str, Any]] = {}
     for style_id, style_definition in styles.items():
         style_meta = _PURE_STYLE_DISPLAY_META.get(style_id, {})
         categories: list[tuple[str, str, dict[str, dict[str, Any]]]] = []
-        for category_id, category_name, option_map in style_definition.get("categories") or []:
+        for category_id, category_name, option_map in (
+            style_definition.get("categories") or []
+        ):
             categories.append(
                 (
                     category_id,
                     category_name,
                     {
                         option_label: _option_entry(option_label, option_definition)
-                        for option_label, option_definition in (option_map or {}).items()
+                        for option_label, option_definition in (
+                            option_map or {}
+                        ).items()
                     },
                 )
             )
@@ -238,7 +290,9 @@ def _selector_seed(slug: str) -> dict[str, Any]:
 def _build_pure_section_defaults() -> dict[str, dict[str, Any]]:
     section_defaults: dict[str, dict[str, Any]] = {}
     for style_definition in _PURE_JEWELRY_STYLES.values():
-        for category_id, category_name, _option_map in style_definition.get("categories") or []:
+        for category_id, category_name, _option_map in (
+            style_definition.get("categories") or []
+        ):
             if category_id in section_defaults:
                 continue
             section_defaults[category_id] = {
@@ -310,6 +364,17 @@ _DEFAULT_NEGATIVE_PROMPT = (
     " extra limbs, cropped, bad anatomy, text overlays, captions, numbers"
 )
 
+_IMAGE_EDIT_HERO = (
+    "Generate this exact same image. Change nothing except the specific modifications stated below. "
+    "Every element of the original image - the background, the scene, the lighting, the model, the pose, "
+    "the outfit, the skin, the framing, the sharpness - is preserved exactly as it appears. "
+    "If anything other than the stated changes is different from the original, the image is not ready."
+)
+
+_IMAGE_EDIT_PURE_JEWELRY_ADDENDUM = "The source was created as pure jewelry, so do not add or alter a model/person unless explicitly requested."
+
+_IMAGE_EDIT_REQUESTED_EDITS_HEADING = "Requested edits:"
+
 
 def _image_edit_option(
     option_id: str,
@@ -343,6 +408,9 @@ def _image_edit_option(
 
 def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
     return {
+        "hero": _IMAGE_EDIT_HERO,
+        "pure_jewelry_addendum": _IMAGE_EDIT_PURE_JEWELRY_ADDENDUM,
+        "requested_edits_heading": _IMAGE_EDIT_REQUESTED_EDITS_HEADING,
         "negative_prompt": _DEFAULT_NEGATIVE_PROMPT,
         "editOptions": [
             _image_edit_option(
@@ -501,7 +569,9 @@ def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
                 "label": "Model",
                 "options": ["model_pose", "outfit_color"],
                 "disabled": disable_model_category,
-                "disabledReason": "Not available for Pure Jewelry" if disable_model_category else None,
+                "disabledReason": "Not available for Pure Jewelry"
+                if disable_model_category
+                else None,
             },
             {
                 "id": "upscale_sharpen",
@@ -510,6 +580,7 @@ def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
             },
         ],
     }
+
 
 _LEGACY_PURE_JEWELRY_TEMPLATES = {
     "studio-shot": (
@@ -779,7 +850,9 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 "name": "On Model",
                 "description": "Primary on-model jewelry generation task.",
                 "surface": "onModel",
-                "display_defaults": deepcopy(_TASK_DISPLAY_DEFAULTS[PROMPT_TASK_ON_MODEL]),
+                "display_defaults": deepcopy(
+                    _TASK_DISPLAY_DEFAULTS[PROMPT_TASK_ON_MODEL]
+                ),
             },
             {
                 "key": PROMPT_TASK_ON_MODEL_EDIT,
@@ -787,14 +860,18 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 "description": "Edit flow for on-model generations.",
                 "surface": "onModel",
                 "parent_task_key": PROMPT_TASK_ON_MODEL,
-                "display_defaults": deepcopy(_TASK_DISPLAY_DEFAULTS[PROMPT_TASK_ON_MODEL_EDIT]),
+                "display_defaults": deepcopy(
+                    _TASK_DISPLAY_DEFAULTS[PROMPT_TASK_ON_MODEL_EDIT]
+                ),
             },
             {
                 "key": PROMPT_TASK_PURE_JEWELRY,
                 "name": "Pure Jewelry",
                 "description": "Primary pure-jewelry generation task.",
                 "surface": "pureJewelry",
-                "display_defaults": deepcopy(_TASK_DISPLAY_DEFAULTS[PROMPT_TASK_PURE_JEWELRY]),
+                "display_defaults": deepcopy(
+                    _TASK_DISPLAY_DEFAULTS[PROMPT_TASK_PURE_JEWELRY]
+                ),
             },
             {
                 "key": PROMPT_TASK_PURE_JEWELRY_EDIT,
@@ -802,7 +879,9 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 "description": "Edit flow for pure-jewelry generations.",
                 "surface": "pureJewelry",
                 "parent_task_key": PROMPT_TASK_PURE_JEWELRY,
-                "display_defaults": deepcopy(_TASK_DISPLAY_DEFAULTS[PROMPT_TASK_PURE_JEWELRY_EDIT]),
+                "display_defaults": deepcopy(
+                    _TASK_DISPLAY_DEFAULTS[PROMPT_TASK_PURE_JEWELRY_EDIT]
+                ),
             },
             {
                 "key": PROMPT_TASK_PLANNER_ENRICH,
@@ -838,7 +917,10 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "version_name": "Default",
                     "public_version_key": "default",
                     "change_note": "Seeded from the legacy inline negative-prompt defaults.",
-                    "sample_input": {"extras": ["overexposed"], "items": [{"type": "Ring", "size": "Medium"}]},
+                    "sample_input": {
+                        "extras": ["overexposed"],
+                        "items": [{"type": "Ring", "size": "Medium"}],
+                    },
                     "definition": _image_defaults_definition(),
                 },
             },
@@ -887,7 +969,11 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 **_selector_seed("on-model-v2"),
                 "input_schema": deepcopy(_IMAGE_COMPOSE_INPUT_SCHEMA),
                 "output_schema": {"type": "object"},
-                "labels": {"family": "image-generation", "surface": "on-model", "version": "v2"},
+                "labels": {
+                    "family": "image-generation",
+                    "surface": "on-model",
+                    "version": "v2",
+                },
                 "initial_version": {
                     "version_number": 1,
                     "status": "published",
@@ -897,7 +983,10 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "sample_input": {
                         "request": {
                             "model": {"slug": "model"},
-                            "style": {"public_version_key": "v2", "background": "Blue Hour Editorial"},
+                            "style": {
+                                "public_version_key": "v2",
+                                "background": "Blue Hour Editorial",
+                            },
                             "mode": "SIMPLE",
                             "looks": 1,
                             "items": [{"type": "Ring", "size": "Small"}],
@@ -919,7 +1008,11 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 **_selector_seed("on-model-v4-5"),
                 "input_schema": deepcopy(_IMAGE_COMPOSE_INPUT_SCHEMA),
                 "output_schema": {"type": "object"},
-                "labels": {"family": "image-generation", "surface": "on-model", "version": "v4.5"},
+                "labels": {
+                    "family": "image-generation",
+                    "surface": "on-model",
+                    "version": "v4.5",
+                },
                 "initial_version": {
                     "version_number": 1,
                     "status": "published",
@@ -929,7 +1022,10 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "sample_input": {
                         "request": {
                             "model": {"slug": "model"},
-                            "style": {"public_version_key": "v4.5", "background": "White Studio"},
+                            "style": {
+                                "public_version_key": "v4.5",
+                                "background": "White Studio",
+                            },
                             "mode": "SIMPLE",
                             "looks": 1,
                             "items": [{"type": "Ring", "size": "Small"}],
@@ -951,7 +1047,11 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 **_selector_seed("pure-jewelry-legacy"),
                 "input_schema": deepcopy(_IMAGE_COMPOSE_INPUT_SCHEMA),
                 "output_schema": {"type": "object"},
-                "labels": {"family": "image-generation", "surface": "pure-jewelry", "version": "legacy"},
+                "labels": {
+                    "family": "image-generation",
+                    "surface": "pure-jewelry",
+                    "version": "legacy",
+                },
                 "initial_version": {
                     "version_number": 1,
                     "status": "published",
@@ -961,7 +1061,10 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "sample_input": {
                         "request": {
                             "model": {"slug": "pure-jewelry"},
-                            "style": {"style_type": "studio-shot", "background": "Pure white"},
+                            "style": {
+                                "style_type": "studio-shot",
+                                "background": "Pure white",
+                            },
                             "looks": 1,
                             "items": [{"type": "Ring", "size": "Medium"}],
                         }
@@ -982,7 +1085,11 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 **_selector_seed("pure-jewelry-v5-2"),
                 "input_schema": deepcopy(_IMAGE_COMPOSE_INPUT_SCHEMA),
                 "output_schema": {"type": "object"},
-                "labels": {"family": "image-generation", "surface": "pure-jewelry", "version": "v5.2"},
+                "labels": {
+                    "family": "image-generation",
+                    "surface": "pure-jewelry",
+                    "version": "v5.2",
+                },
                 "initial_version": {
                     "version_number": 1,
                     "status": "published",
@@ -992,7 +1099,10 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "sample_input": {
                         "request": {
                             "model": {"slug": "pure-jewelry"},
-                            "style": {"public_version_key": "v5.2", "style_type": "pure-studio"},
+                            "style": {
+                                "public_version_key": "v5.2",
+                                "style_type": "pure-studio",
+                            },
                             "looks": 1,
                             "items": [{"type": "Ring", "size": "Very Small"}],
                         }
@@ -1013,7 +1123,11 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 **_selector_seed("on-model-edit-default"),
                 "input_schema": deepcopy(_IMAGE_COMPOSE_INPUT_SCHEMA),
                 "output_schema": {"type": "object"},
-                "labels": {"family": "image-edit", "surface": "on-model", "version": "default"},
+                "labels": {
+                    "family": "image-edit",
+                    "surface": "on-model",
+                    "version": "default",
+                },
                 "initial_version": {
                     "version_number": 1,
                     "status": "published",
@@ -1023,7 +1137,9 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "sample_input": {
                         "request": {
                             "style": {"task_type": PROMPT_TASK_ON_MODEL_EDIT},
-                            "promptOverrides": ["Generate this exact same image with the selected edit instructions."],
+                            "promptOverrides": [
+                                "Generate this exact same image with the selected edit instructions."
+                            ],
                             "looks": 1,
                         }
                     },
@@ -1043,7 +1159,11 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 **_selector_seed("pure-jewelry-edit-default"),
                 "input_schema": deepcopy(_IMAGE_COMPOSE_INPUT_SCHEMA),
                 "output_schema": {"type": "object"},
-                "labels": {"family": "image-edit", "surface": "pure-jewelry", "version": "default"},
+                "labels": {
+                    "family": "image-edit",
+                    "surface": "pure-jewelry",
+                    "version": "default",
+                },
                 "initial_version": {
                     "version_number": 1,
                     "status": "published",
@@ -1053,7 +1173,9 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                     "sample_input": {
                         "request": {
                             "style": {"task_type": PROMPT_TASK_PURE_JEWELRY_EDIT},
-                            "promptOverrides": ["Generate this exact same image with the selected edit instructions."],
+                            "promptOverrides": [
+                                "Generate this exact same image with the selected edit instructions."
+                            ],
                             "looks": 1,
                         }
                     },
@@ -1179,7 +1301,9 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 "priority": 30,
                 "is_active": True,
                 "match_rules": {
-                    "request.style.public_version_key": {"in": ["v4.5", "4.5", "v45", "45"]},
+                    "request.style.public_version_key": {
+                        "in": ["v4.5", "4.5", "v45", "45"]
+                    },
                 },
                 "engine_slug": "on-model-v4-5",
                 "notes": "Default on-model route for the newer editorial prompt version.",
@@ -1245,7 +1369,9 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
                 "priority": 10,
                 "is_active": True,
                 "match_rules": {
-                    "request.style.public_version_key": {"in": ["v4.5", "4.5", "v45", "45"]},
+                    "request.style.public_version_key": {
+                        "in": ["v4.5", "4.5", "v45", "45"]
+                    },
                 },
                 "engine_slug": "on-model-v4-5",
                 "notes": "Task-first route for on-model V4.5 requests.",
