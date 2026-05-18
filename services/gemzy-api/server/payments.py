@@ -433,7 +433,7 @@ async def rc_webhook(request: Request) -> dict:
         should_reset_credit_schedule = True
         
         # Retention offer detection
-        offer_code = event.get("offer_code", "")
+        offer_code = event.get("offer_code") or ""
         if "retention" in product_id.lower() or "retention" in offer_code.lower():
             update_data["retention_offer_used"] = True
             update_data["retention_offer_used_at"] = datetime.now(timezone.utc).isoformat()
