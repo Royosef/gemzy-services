@@ -77,7 +77,9 @@ def _cache_ttl_seconds() -> float:
 
 
 def _engine_active_version_id(engine: dict[str, Any]) -> str | None:
-    active_version_id = engine.get("active_version_id") or engine.get("published_version_id")
+    # Runtime consumers should follow the published version when a newer draft
+    # temporarily diverges via active_version_id in admin flows.
+    active_version_id = engine.get("published_version_id") or engine.get("active_version_id")
     if not active_version_id:
         return None
     return str(active_version_id)

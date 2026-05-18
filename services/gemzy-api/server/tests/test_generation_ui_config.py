@@ -135,6 +135,91 @@ def test_generation_ui_config_returns_db_overrides_and_fallbacks(
     assert body["fetchedAt"]
 
 
+def test_generation_ui_config_prefers_published_version_when_active_differs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    client = TestClient(app)
+    stub = _StubClient()
+
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-1",
+            "slug": "on-model-v4-5",
+            "name": "Gemzy Experimental",
+            "description": "DB override",
+            "task_id": "task-1",
+            "public_engine_key": "on-model-v4-5",
+            "is_user_selectable": True,
+            "sort_order": 5,
+            "selector_title": "Gemzy Experimental",
+            "selector_pill_label": "Gemzy Experimental",
+            "selector_description": "DB override",
+            "selector_image_key": "engine-v2",
+            "active_version_id": "version-draft",
+            "published_version_id": "version-published",
+        }
+    ]
+    stub.tables["prompt_tasks"] = [
+        {
+            "id": "task-1",
+            "key": "on-model",
+            "name": "On Model",
+            "description": "Primary task",
+            "surface": "onModel",
+            "display_defaults": {"layout": "flat-sections"},
+        }
+    ]
+    stub.tables["prompt_engine_versions"] = [
+        {
+            "id": "version-draft",
+            "public_version_key": "v-draft",
+            "definition": {
+                "mapping": {
+                    "background": {
+                        "a": "A prompt",
+                        "b": "B prompt",
+                    }
+                },
+                "ui": {
+                    "sections": [
+                        {"id": "background", "options": ["b", "a"]},
+                    ]
+                },
+            },
+        },
+        {
+            "id": "version-published",
+            "public_version_key": "v-published",
+            "definition": {
+                "mapping": {
+                    "background": {
+                        "a": "A prompt",
+                        "b": "B prompt",
+                    }
+                },
+                "ui": {
+                    "sections": [
+                        {"id": "background", "options": ["a", "b"]},
+                    ]
+                },
+            },
+        },
+    ]
+
+    monkeypatch.setattr(generations, "get_client", lambda: stub)
+    monkeypatch.setattr(generations, "ensure_default_prompt_registry", lambda client=None: False)
+
+    response = client.get("/generations/ui-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    options = body["onModel"]["engines"][0]["sections"][0]["options"]
+    assert [option["id"] for option in options] == ["a", "b"]
+    assert body["onModel"]["engines"][0]["publicVersionKey"] == "v-published"
+
+
 def test_generation_ui_config_falls_back_when_registry_seed_hits_rls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -410,6 +495,81 @@ def test_generation_ui_config_derives_on_model_option_labels_from_definition(
     assert [option["id"] for option in hair_section["options"]] == ["soft-wind", "behind-ear"]
 
 
+def test_generation_ui_config_respects_on_model_ui_section_and_option_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    client = TestClient(app)
+    stub = _StubClient()
+
+    stub.tables["prompt_tasks"] = [
+        {
+            "id": "task-on-model",
+            "key": "on-model",
+            "name": "On Model",
+            "description": "Primary task",
+            "surface": "onModel",
+            "display_defaults": {"layout": "flat-sections"},
+        }
+    ]
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-surface",
+            "slug": "on-model-v3",
+            "name": "Gemzy Ultra",
+            "description": "Published DB engine",
+            "task_id": "task-on-model",
+            "public_engine_key": "v3",
+            "is_user_selectable": True,
+            "sort_order": 7,
+            "selector_title": "Gemzy Ultra",
+            "selector_pill_label": "Gemzy Ultra",
+            "selector_description": "Published DB engine",
+            "active_version_id": "version-surface",
+            "published_version_id": "version-surface",
+        }
+    ]
+    stub.tables["prompt_engine_versions"] = [
+        {
+            "id": "version-surface",
+            "public_version_key": "v3",
+            "definition": {
+                "mapping": {
+                    "lighting": {"Backlit": "A", "Soft": "B"},
+                    "hair": {"Behind Ear": "C", "Soft Wind": "D"},
+                },
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "hair",
+                            "options": [{"label": "Soft Wind"}, {"label": "Behind Ear"}],
+                        },
+                        {
+                            "id": "lighting",
+                            "options": [{"label": "Soft"}, {"label": "Backlit"}],
+                        },
+                    ]
+                },
+            },
+        }
+    ]
+
+    monkeypatch.setattr(generations, "get_client", lambda: stub)
+    monkeypatch.setattr(generations, "ensure_default_prompt_registry", lambda client=None: False)
+
+    response = client.get("/generations/ui-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    on_model_engine = next(engine for engine in body["onModel"]["engines"] if engine["engineId"] == "v3")
+    assert [section["id"] for section in on_model_engine["sections"][:2]] == ["hair", "lighting"]
+    hair_section = next(section for section in on_model_engine["sections"] if section["id"] == "hair")
+    lighting_section = next(section for section in on_model_engine["sections"] if section["id"] == "lighting")
+    assert [option["label"] for option in hair_section["options"]] == ["Soft Wind", "Behind Ear"]
+    assert [option["label"] for option in lighting_section["options"]] == ["Soft", "Backlit"]
+
+
 def test_generation_ui_config_derives_pure_jewelry_style_options_from_definition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -495,3 +655,116 @@ def test_generation_ui_config_derives_pure_jewelry_style_options_from_definition
     assert scene_parameter["description"] == "Studio environment"
     assert [option["label"] for option in scene_parameter["options"]] == ["Rose Mist", "Pure White"]
     assert [option["id"] for option in scene_parameter["options"]] == ["rose-mist", "pure-white"]
+
+
+def test_generation_ui_config_respects_pure_jewelry_ui_style_and_option_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    client = TestClient(app)
+    stub = _StubClient()
+
+    stub.tables["prompt_tasks"] = [
+        {
+            "id": "task-pure",
+            "key": "pure-jewelry",
+            "name": "Pure Jewelry",
+            "description": "Primary task",
+            "surface": "pureJewelry",
+            "display_defaults": {"layout": "style-cards"},
+        }
+    ]
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-pure",
+            "slug": "pure-jewelry-v3",
+            "name": "Pure Ultra",
+            "description": "Published DB engine",
+            "task_id": "task-pure",
+            "public_engine_key": "v3",
+            "is_user_selectable": True,
+            "sort_order": 7,
+            "selector_title": "Pure Ultra",
+            "selector_pill_label": "Pure Ultra",
+            "selector_description": "Published DB engine",
+            "active_version_id": "version-pure",
+            "published_version_id": "version-pure",
+        }
+    ]
+    stub.tables["prompt_engine_versions"] = [
+        {
+            "id": "version-pure",
+            "public_version_key": "v3",
+            "definition": {
+                "styles": {
+                    "surface-light": {
+                        "categories": [
+                            (
+                                "props",
+                                "PROPS",
+                                {
+                                    "Ceramic": "ceramic prompt",
+                                    "Glass": "glass prompt",
+                                },
+                            ),
+                            (
+                                "scene",
+                                "SCENE",
+                                {
+                                    "Rose Mist": "rose mist prompt",
+                                    "Pure White": "pure white prompt",
+                                },
+                            ),
+                        ]
+                    },
+                    "pure-studio": {
+                        "categories": [
+                            (
+                                "scene",
+                                "SCENE",
+                                {
+                                    "Rose Mist": "rose mist prompt",
+                                    "Pure White": "pure white prompt",
+                                },
+                            )
+                        ]
+                    },
+                },
+                "ui": {
+                    "styles": [
+                        {
+                            "id": "surface-light",
+                            "parameters": [
+                                {
+                                    "id": "scene",
+                                    "options": [{"label": "Pure White"}, {"label": "Rose Mist"}],
+                                },
+                                {
+                                    "id": "props",
+                                    "options": [{"label": "Glass"}, {"label": "Ceramic"}],
+                                },
+                            ],
+                        },
+                        {"id": "pure-studio", "parameters": []},
+                    ]
+                },
+            },
+        }
+    ]
+
+    monkeypatch.setattr(generations, "get_client", lambda: stub)
+    monkeypatch.setattr(generations, "ensure_default_prompt_registry", lambda client=None: False)
+
+    response = client.get("/generations/ui-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    pure_engine = next(engine for engine in body["pureJewelry"]["engines"] if engine["engineId"] == "v3")
+    assert [style["id"] for style in pure_engine["styles"][:2]] == ["surface-light", "pure-studio"]
+    surface_light = next(style for style in pure_engine["styles"] if style["id"] == "surface-light")
+    assert [parameter["id"] for parameter in surface_light["parameters"][:2]] == ["scene", "props"]
+    scene_parameter = next(parameter for parameter in surface_light["parameters"] if parameter["id"] == "scene")
+    props_parameter = next(parameter for parameter in surface_light["parameters"] if parameter["id"] == "props")
+    assert [option["label"] for option in scene_parameter["options"]] == ["Pure White", "Rose Mist"]
+    assert [option["label"] for option in props_parameter["options"]] == ["Glass", "Ceramic"]

@@ -120,6 +120,65 @@ def _normalize_option_list(raw_options: Any) -> list[dict[str, Any]]:
     return options
 
 
+def _ordered_ids_from_ui_entries(
+    raw_entries: Any,
+    *,
+    key: str,
+) -> list[str]:
+    if not isinstance(raw_entries, list):
+        return []
+    ordered: list[str] = []
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        value = str(raw_entry.get(key) or "").strip()
+        if value and value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _ordered_option_keys_from_ui_entries(raw_entries: Any) -> list[str]:
+    if not isinstance(raw_entries, list):
+        return []
+    ordered: list[str] = []
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        label = str(raw_entry.get("label") or "").strip()
+        option_id = str(raw_entry.get("id") or "").strip()
+        key = label or option_id
+        if key and key not in ordered:
+            ordered.append(key)
+    return ordered
+
+
+def _ordered_mapping_items(
+    option_map: dict[str, Any],
+    preferred_order: list[str],
+) -> list[tuple[str, Any]]:
+    seen: set[str] = set()
+    ordered: list[tuple[str, Any]] = []
+    for preferred in preferred_order:
+        if preferred in option_map and preferred not in seen:
+            ordered.append((preferred, option_map[preferred]))
+            seen.add(preferred)
+            continue
+        for option_label, option_definition in option_map.items():
+            if option_label in seen:
+                continue
+            if isinstance(option_definition, dict):
+                label = str(option_definition.get("label") or "").strip()
+                option_id = str(option_definition.get("id") or "").strip()
+                if preferred in {label, option_id}:
+                    ordered.append((option_label, option_definition))
+                    seen.add(option_label)
+                    break
+    for option_label, option_definition in option_map.items():
+        if option_label not in seen:
+            ordered.append((option_label, option_definition))
+    return ordered
+
+
 def _build_edit_config_from_definition(definition: dict[str, Any]) -> dict[str, Any] | None:
     raw_options = definition.get("editOptions") or []
     raw_categories = definition.get("editCategories") or []
@@ -198,6 +257,9 @@ def _build_on_model_sections_from_definition(
     mapping = definition.get("mapping") or {}
     if not isinstance(mapping, dict):
         return []
+    ui_sections = []
+    if isinstance(definition.get("ui"), dict):
+        ui_sections = definition.get("ui", {}).get("sections") or []
 
     base_sections = {
         str(section.get("id") or "").strip(): section
@@ -205,7 +267,10 @@ def _build_on_model_sections_from_definition(
         if isinstance(section, dict) and section.get("id")
     }
     section_defaults = display_defaults.get("sectionDefaults") or {}
-    ordered_section_ids = list(base_sections.keys())
+    ordered_section_ids = _ordered_ids_from_ui_entries(ui_sections, key="id")
+    for section_id in base_sections.keys():
+        if section_id and section_id not in ordered_section_ids:
+            ordered_section_ids.append(section_id)
     for section_id in mapping.keys():
         normalized_section_id = str(section_id or "").strip()
         if normalized_section_id and normalized_section_id not in ordered_section_ids:
@@ -218,8 +283,22 @@ def _build_on_model_sections_from_definition(
             continue
         section_default = section_defaults.get(section_id) or {}
         base_section = base_sections.get(section_id) or {}
+        ui_section = next(
+            (
+                section
+                for section in ui_sections
+                if isinstance(section, dict) and str(section.get("id") or "").strip() == section_id
+            ),
+            {},
+        )
+        preferred_option_order = _ordered_option_keys_from_ui_entries(
+            ui_section.get("options") if isinstance(ui_section, dict) else []
+        )
         options: list[dict[str, Any]] = []
-        for index, (option_label, option_definition) in enumerate(option_map.items(), start=1):
+        for index, (option_label, option_definition) in enumerate(
+            _ordered_mapping_items(option_map, preferred_option_order),
+            start=1,
+        ):
             normalized_option = _normalize_definition_option(
                 option_key=str(option_label or "").strip(),
                 option_definition=option_definition,
@@ -253,6 +332,9 @@ def _build_pure_jewelry_styles_from_definition(
     raw_styles = definition.get("styles") or {}
     if not isinstance(raw_styles, dict):
         return []
+    ui_styles = []
+    if isinstance(definition.get("ui"), dict):
+        ui_styles = definition.get("ui", {}).get("styles") or []
 
     base_styles = {
         str(style.get("id") or "").strip(): style
@@ -260,7 +342,10 @@ def _build_pure_jewelry_styles_from_definition(
         if isinstance(style, dict) and style.get("id")
     }
     section_defaults = display_defaults.get("sectionDefaults") or {}
-    ordered_style_ids = list(base_styles.keys())
+    ordered_style_ids = _ordered_ids_from_ui_entries(ui_styles, key="id")
+    for style_id in base_styles.keys():
+        if style_id and style_id not in ordered_style_ids:
+            ordered_style_ids.append(style_id)
     for style_id in raw_styles.keys():
         normalized_style_id = str(style_id or "").strip()
         if normalized_style_id and normalized_style_id not in ordered_style_ids:
@@ -272,14 +357,48 @@ def _build_pure_jewelry_styles_from_definition(
         if not isinstance(style_definition, dict):
             continue
         base_style = base_styles.get(style_id) or {}
+        ui_style = next(
+            (
+                style
+                for style in ui_styles
+                if isinstance(style, dict) and str(style.get("id") or "").strip() == style_id
+            ),
+            {},
+        )
         base_parameters = {
             str(parameter.get("id") or "").strip(): parameter
             for parameter in (base_style.get("parameters") or [])
             if isinstance(parameter, dict) and parameter.get("id")
         }
+        raw_categories = style_definition.get("categories") or []
+        category_by_id: dict[str, Any] = {}
+        category_order: list[str] = []
+        for raw_category in raw_categories:
+            if isinstance(raw_category, (list, tuple)) and len(raw_category) >= 3:
+                parameter_id = str(raw_category[0] or "").strip()
+            elif isinstance(raw_category, dict):
+                parameter_id = str(
+                    raw_category.get("id") or raw_category.get("key") or raw_category.get("parameterId") or ""
+                ).strip()
+            else:
+                continue
+            if not parameter_id or parameter_id in category_by_id:
+                continue
+            category_by_id[parameter_id] = raw_category
+        category_order.extend(
+            _ordered_ids_from_ui_entries(
+                ui_style.get("parameters") if isinstance(ui_style, dict) else [],
+                key="id",
+            )
+        )
+        for parameter_id in category_by_id.keys():
+            if parameter_id not in category_order:
+                category_order.append(parameter_id)
         parameters: list[dict[str, Any]] = []
-        categories = style_definition.get("categories") or []
-        for index, raw_category in enumerate(categories, start=1):
+        for index, parameter_id in enumerate(category_order, start=1):
+            raw_category = category_by_id.get(parameter_id)
+            if raw_category is None:
+                continue
             if isinstance(raw_category, (list, tuple)) and len(raw_category) >= 3:
                 parameter_id = str(raw_category[0] or "").strip()
                 parameter_heading = str(raw_category[1] or "").strip()
@@ -297,8 +416,23 @@ def _build_pure_jewelry_styles_from_definition(
 
             base_parameter = base_parameters.get(parameter_id) or {}
             parameter_default = section_defaults.get(parameter_id) or {}
+            ui_parameter = next(
+                (
+                    parameter
+                    for parameter in (ui_style.get("parameters") or [])
+                    if isinstance(parameter, dict)
+                    and str(parameter.get("id") or "").strip() == parameter_id
+                ),
+                {},
+            )
+            preferred_option_order = _ordered_option_keys_from_ui_entries(
+                ui_parameter.get("options") if isinstance(ui_parameter, dict) else []
+            )
             options: list[dict[str, Any]] = []
-            for option_position, (option_label, option_definition) in enumerate(option_map.items(), start=1):
+            for option_position, (option_label, option_definition) in enumerate(
+                _ordered_mapping_items(option_map, preferred_option_order),
+                start=1,
+            ):
                 normalized_option = _normalize_definition_option(
                     option_key=str(option_label or "").strip(),
                     option_definition=option_definition,
@@ -563,9 +697,9 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
         task_rows_by_id = {str(row["id"]): row for row in task_rows if row.get("id")}
 
     published_version_ids = [
-        str(row.get("active_version_id") or row.get("published_version_id"))
+        str(row.get("published_version_id") or row.get("active_version_id"))
         for row in engine_rows
-        if row.get("active_version_id") or row.get("published_version_id")
+        if row.get("published_version_id") or row.get("active_version_id")
     ]
     versions_by_id: dict[str, dict[str, Any]] = {}
     if published_version_ids:
@@ -631,7 +765,7 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
             }
 
     for engine_row in engine_rows:
-        published_version_id = engine_row.get("active_version_id") or engine_row.get("published_version_id")
+        published_version_id = engine_row.get("published_version_id") or engine_row.get("active_version_id")
         version_row = versions_by_id.get(str(published_version_id))
         if not version_row:
             continue
