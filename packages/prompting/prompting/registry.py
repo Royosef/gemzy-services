@@ -27,6 +27,9 @@ class PromptRouteNotFound(PromptRegistryError):
 
 _DEFAULTS_SYNCED = False
 _STORE_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_ON_MODEL_SECTION_ALIASES = {
+    "background": ("background", "scene"),
+}
 
 
 def _json_safe(value: Any) -> Any:
@@ -193,6 +196,17 @@ def _resolve_option_selection(option_map: dict[str, Any], selected: str | None) 
     return None
 
 
+def _get_on_model_option_map(mapping: dict[str, Any], field: str) -> dict[str, Any]:
+    direct = mapping.get(field)
+    if isinstance(direct, dict):
+        return direct
+    for alias in _ON_MODEL_SECTION_ALIASES.get(field, ()):
+        candidate = mapping.get(alias)
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
 def _normalize_jewelry_type_label(
     value: str | None,
     aliases: dict[str, str] | None = None,
@@ -228,17 +242,18 @@ def _normalize_background_label(
         return ""
     normalized = value.strip()
     aliases = aliases or {}
-    resolved = _resolve_option_selection(mapping.get("background") or {}, normalized)
+    background_options = _get_on_model_option_map(mapping, "background")
+    resolved = _resolve_option_selection(background_options, normalized)
     if resolved is not None:
         return resolved["label"]
     alias = aliases.get(normalized)
     if alias:
-        resolved_alias = _resolve_option_selection(mapping.get("background") or {}, alias)
+        resolved_alias = _resolve_option_selection(background_options, alias)
         if resolved_alias is not None:
             return resolved_alias["label"]
     for source, target in aliases.items():
         if target == normalized:
-            resolved_source = _resolve_option_selection(mapping.get("background") or {}, source)
+            resolved_source = _resolve_option_selection(background_options, source)
             if resolved_source is not None:
                 return resolved_source["label"]
     return normalized
@@ -431,9 +446,15 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
             f"\nMODEL\n{texts.get('model_base', '')}",
         ]
 
-        background = _normalize_background_label(style.get("background"), background_aliases, mapping)
+        background = _normalize_background_label(
+            style.get("background") or style.get("scene"),
+            background_aliases,
+            mapping,
+        )
         background_color = str(style.get("studioColorHex") or "").upper()
-        background_text = (_resolve_option_selection(mapping.get("background", {}), background) or {}).get("prompt", "")
+        background_text = (
+            _resolve_option_selection(_get_on_model_option_map(mapping, "background"), background) or {}
+        ).get("prompt", "")
         if background and background_text:
             if "{color}" in background_text and background_color:
                 background_text = background_text.replace("{color}", background_color)
@@ -488,9 +509,15 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
             f"[{item_description}]",
         ]
 
-        background = _normalize_background_label(style.get("background"), background_aliases, mapping)
+        background = _normalize_background_label(
+            style.get("background") or style.get("scene"),
+            background_aliases,
+            mapping,
+        )
         background_color = str(style.get("studioColorHex") or "")
-        background_text = (_resolve_option_selection(mapping.get("background", {}), background) or {}).get("prompt", "")
+        background_text = (
+            _resolve_option_selection(_get_on_model_option_map(mapping, "background"), background) or {}
+        ).get("prompt", "")
         if background and background_text:
             if "{color}" in background_text and background_color:
                 background_text = background_text.replace("{color}", background_color)

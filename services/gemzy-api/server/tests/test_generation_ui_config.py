@@ -570,6 +570,78 @@ def test_generation_ui_config_respects_on_model_ui_section_and_option_order(
     assert [option["label"] for option in lighting_section["options"]] == ["Soft", "Backlit"]
 
 
+def test_generation_ui_config_normalizes_on_model_scene_section_to_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    client = TestClient(app)
+    stub = _StubClient()
+
+    stub.tables["prompt_tasks"] = [
+        {
+            "id": "task-on-model",
+            "key": "on-model",
+            "name": "On Model",
+            "description": "Primary task",
+            "surface": "onModel",
+            "display_defaults": {"layout": "flat-sections"},
+        }
+    ]
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-surface",
+            "slug": "on-model-v3",
+            "name": "Gemzy Ultra",
+            "description": "Published DB engine",
+            "task_id": "task-on-model",
+            "public_engine_key": "v3",
+            "is_user_selectable": True,
+            "sort_order": 7,
+            "selector_title": "Gemzy Ultra",
+            "selector_pill_label": "Gemzy Ultra",
+            "selector_description": "Published DB engine",
+            "active_version_id": "version-surface",
+            "published_version_id": "version-surface",
+        }
+    ]
+    stub.tables["prompt_engine_versions"] = [
+        {
+            "id": "version-surface",
+            "public_version_key": "v3",
+            "definition": {
+                "mapping": {
+                    "scene": {
+                        "White Studio": "white studio prompt",
+                        "Dark Studio": "dark studio prompt",
+                    }
+                },
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "scene",
+                            "label": "Scene",
+                            "options": [{"label": "Dark Studio"}, {"label": "White Studio"}],
+                        }
+                    ]
+                },
+            },
+        }
+    ]
+
+    monkeypatch.setattr(generations, "get_client", lambda: stub)
+    monkeypatch.setattr(generations, "ensure_default_prompt_registry", lambda client=None: False)
+
+    response = client.get("/generations/ui-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    on_model_engine = next(engine for engine in body["onModel"]["engines"] if engine["engineId"] == "v3")
+    background_section = next(section for section in on_model_engine["sections"] if section["id"] == "background")
+    assert background_section["label"] == "Scene"
+    assert [option["label"] for option in background_section["options"]] == ["Dark Studio", "White Studio"]
+
+
 def test_generation_ui_config_derives_pure_jewelry_style_options_from_definition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

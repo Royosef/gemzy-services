@@ -10,6 +10,9 @@ from typing import Any
 from .ui_defaults import get_default_generation_ui_catalog
 
 _SURFACE_KEYS = ("onModel", "pureJewelry")
+_ON_MODEL_SECTION_ID_ALIASES = {
+    "scene": "background",
+}
 _FALLBACK_TASK_META = {
     "on-model": {
         "name": "On Model",
@@ -41,6 +44,11 @@ _FALLBACK_TASK_META = {
 def _slugify_label(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
     return normalized.strip("-")
+
+
+def _normalize_on_model_section_id(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return _ON_MODEL_SECTION_ID_ALIASES.get(normalized, normalized)
 
 
 def _deep_merge(base: Any, override: Any) -> Any:
@@ -262,23 +270,34 @@ def _build_on_model_sections_from_definition(
         ui_sections = definition.get("ui", {}).get("sections") or []
 
     base_sections = {
-        str(section.get("id") or "").strip(): section
+        _normalize_on_model_section_id(section.get("id")): section
         for section in (base_engine.get("sections") or [])
-        if isinstance(section, dict) and section.get("id")
+        if isinstance(section, dict) and _normalize_on_model_section_id(section.get("id"))
     }
     section_defaults = display_defaults.get("sectionDefaults") or {}
-    ordered_section_ids = _ordered_ids_from_ui_entries(ui_sections, key="id")
+    ordered_section_ids = [
+        normalized_id
+        for raw_section_id in _ordered_ids_from_ui_entries(ui_sections, key="id")
+        if (normalized_id := _normalize_on_model_section_id(raw_section_id))
+    ]
     for section_id in base_sections.keys():
         if section_id and section_id not in ordered_section_ids:
             ordered_section_ids.append(section_id)
     for section_id in mapping.keys():
-        normalized_section_id = str(section_id or "").strip()
+        normalized_section_id = _normalize_on_model_section_id(section_id)
         if normalized_section_id and normalized_section_id not in ordered_section_ids:
             ordered_section_ids.append(normalized_section_id)
 
     sections: list[dict[str, Any]] = []
     for section_id in ordered_section_ids:
-        option_map = mapping.get(section_id) or {}
+        option_map = (
+            mapping.get(section_id)
+            or (
+                mapping.get("scene")
+                if section_id == "background"
+                else {}
+            )
+        ) or {}
         if not isinstance(option_map, dict):
             continue
         section_default = section_defaults.get(section_id) or {}
@@ -287,7 +306,8 @@ def _build_on_model_sections_from_definition(
             (
                 section
                 for section in ui_sections
-                if isinstance(section, dict) and str(section.get("id") or "").strip() == section_id
+                if isinstance(section, dict)
+                and _normalize_on_model_section_id(section.get("id")) == section_id
             ),
             {},
         )
@@ -309,8 +329,17 @@ def _build_on_model_sections_from_definition(
         sections.append(
             {
                 "id": section_id,
-                "label": str(section_default.get("label") or base_section.get("label") or section_id),
-                "description": section_default.get("description") or base_section.get("description"),
+                "label": str(
+                    section_default.get("label")
+                    or ui_section.get("label")
+                    or base_section.get("label")
+                    or section_id
+                ),
+                "description": (
+                    section_default.get("description")
+                    or ui_section.get("description")
+                    or base_section.get("description")
+                ),
                 "iconKey": section_default.get("iconKey") or base_section.get("iconKey"),
                 "editTier": section_default.get("editTier") or base_section.get("editTier"),
                 "supportsRandom": bool(

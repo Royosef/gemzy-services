@@ -375,6 +375,66 @@ def test_preview_prompt_engine_version_renders_output(
     assert "grainy" in output["negative_prompt"]
 
 
+def test_preview_on_model_v45_renders_scene_mapping_as_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _build_app(
+        monkeypatch,
+        UserState(id="admin-1", credits=10, isAdmin=True),
+    )
+
+    create_response = client.post(
+        "/prompt-engines",
+        json={
+            "slug": "preview-scene-me",
+            "name": "Preview Scene Me",
+            "taskType": "image_generation.on_model",
+            "rendererKey": "on_model_sections_v1",
+            "initialVersion": {
+                "definition": {
+                    "variant": "v4.5",
+                    "texts": {
+                        "hero": "Hero prompt",
+                        "model_base": "Model prompt",
+                        "quality": "Quality prompt",
+                    },
+                    "mapping": {
+                        "scene": {
+                            "Dark Studio": "dark studio prompt",
+                        },
+                        "camera": {
+                            "Portrait": "portrait camera prompt",
+                        },
+                    },
+                },
+                "sampleInput": {},
+            },
+        },
+    )
+    version_id = create_response.json()["versions"][0]["id"]
+
+    preview_response = client.post(
+        f"/prompt-engines/preview-scene-me/versions/{version_id}/preview",
+        json={
+            "input": {
+                "request": {
+                    "style": {
+                        "background": "Dark Studio",
+                        "camera": "Portrait",
+                    },
+                    "items": [{"type": "Ring", "size": "Medium"}],
+                }
+            }
+        },
+    )
+
+    assert preview_response.status_code == 200
+    prompt = preview_response.json()["output"]["prompts"][0]
+    assert "SCENE: Dark Studio" in prompt
+    assert "dark studio prompt" in prompt
+    assert "CAMERA STYLE: Portrait" in prompt
+
+
 def test_prompt_route_crud_flow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
