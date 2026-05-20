@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from uuid import uuid4
@@ -712,11 +713,21 @@ async def exchange_google_code(auth_code: str, redirect_uri: str | None = None) 
 @limiter.limit(LIMIT_oauth_login)
 async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
     sb = create_user_client()
+    started_at = time.perf_counter()
 
     if not data.token:
         raise HTTPException(400, "Missing token")
 
     raw_id_token: str | None = None
+    request_client = getattr(request.client, "host", None)
+
+    logger.info(
+        "oauth_login started provider=%s token_type=%s has_nonce=%s client=%s",
+        data.provider,
+        data.tokenType,
+        bool(data.nonce),
+        request_client,
+    )
 
     if data.provider == "apple":
         payload = {"provider": data.provider, "token": data.token}
@@ -725,28 +736,53 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
             raise HTTPException(400, "Missing nonce for Apple")
         payload["nonce"] = data.nonce
         raw_id_token = data.token
+        sign_in_started = time.perf_counter()
         res = sb.auth.sign_in_with_id_token(payload)
+        logger.info(
+            "oauth_login apple sign_in_with_id_token completed in %.3fs",
+            time.perf_counter() - sign_in_started,
+        )
         
     elif data.provider == "google":
         if data.tokenType == "id_token":
+            verify_started = time.perf_counter()
             google_payload = _verify_google_id_token(data.token)
+            logger.info(
+                "oauth_login google verify_oauth2_token completed in %.3fs",
+                time.perf_counter() - verify_started,
+            )
             if data.nonce and google_payload.get("nonce") != data.nonce:
                 raise HTTPException(400, "Google nonce mismatch")
             raw_id_token = data.token
             payload = {"provider": "google", "token": data.token}
             if data.nonce:
                 payload["nonce"] = data.nonce
+            sign_in_started = time.perf_counter()
             res = sb.auth.sign_in_with_id_token(payload)
+            logger.info(
+                "oauth_login google sign_in_with_id_token completed in %.3fs",
+                time.perf_counter() - sign_in_started,
+            )
         else:
+            exchange_started = time.perf_counter()
             tokens = await exchange_google_code(data.token, data.redirectUri)
+            logger.info(
+                "oauth_login google exchange_google_code completed in %.3fs",
+                time.perf_counter() - exchange_started,
+            )
             id_token = tokens.get("id_token")
             access_token = tokens.get("access_token")
             if not id_token or not access_token:
                 raise HTTPException(400, "Google exchange did not return id_token/access_token")
 
             raw_id_token = id_token
+            sign_in_started = time.perf_counter()
             res = sb.auth.sign_in_with_id_token(
                 {"provider": "google", "token": id_token, "access_token": access_token}
+            )
+            logger.info(
+                "oauth_login google sign_in_with_id_token completed in %.3fs",
+                time.perf_counter() - sign_in_started,
             )
     else:
         raise HTTPException(400, "Unsupported provider")
@@ -762,15 +798,26 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
 
     if res.user is None or res.session is None:
         raise HTTPException(status_code=400, detail="Invalid token")
-        
+
     metadata = dict(_user_metadata(res.user))
+    service_client_started = time.perf_counter()
     admin_client = get_service_role_client(fresh=True)
+    logger.info(
+        "oauth_login get_service_role_client completed in %.3fs",
+        time.perf_counter() - service_client_started,
+    )
     try:
+        ensure_profile_started = time.perf_counter()
         profile, is_new = _ensure_profile_exists(
             res.user.id,
             metadata,
             client=admin_client,
             provided_name=data.name,
+        )
+        logger.info(
+            "oauth_login ensure_profile_exists completed in %.3fs new_user=%s",
+            time.perf_counter() - ensure_profile_started,
+            is_new,
         )
     except APIError as exc:
         raise HTTPException(
@@ -783,12 +830,22 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
             detail="Profile creation failed",
         ) from exc
 
+    clear_deactivation_started = time.perf_counter()
     metadata, profile, _ = clear_user_deactivation(
         res.user.id, metadata=metadata, profile=profile, client=admin_client
     )
+    logger.info(
+        "oauth_login clear_user_deactivation completed in %.3fs",
+        time.perf_counter() - clear_deactivation_started,
+    )
     profile = profile or {}
 
+    credits_started = time.perf_counter()
     profile = _ensure_monthly_credits(res.user.id, profile.get("plan"), profile)
+    logger.info(
+        "oauth_login ensure_monthly_credits completed in %.3fs",
+        time.perf_counter() - credits_started,
+    )
     
     loggedUser = _build_user_state(
         res.user.id,
@@ -796,6 +853,12 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
         metadata,
         created_at=_auth_user_created_at(res.user),
         auth_user=res.user,
+    )
+    logger.info(
+        "oauth_login completed provider=%s user_id=%s total=%.3fs",
+        data.provider,
+        res.user.id,
+        time.perf_counter() - started_at,
     )
     
     return AuthResponse(

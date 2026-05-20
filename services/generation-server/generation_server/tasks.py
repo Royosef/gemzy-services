@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 from typing import Iterable, List, Literal, Protocol
 
-from prompting import PROMPT_TASK_IMAGE_GENERATION_COMPOSE, resolve_prompt_task
+from prompting import PROMPT_TASK_IMAGE_GENERATION_COMPOSE
 
 from .callbacks import CallbackEvent, safe_send_event
-from .prompt_builder import build_negative_prompt, build_prompts
+from .prompt_builder import build_negative_prompt, build_prompts, render_prompt_request
 from .comfy_runner import ComfyWorkflowRunner
 from .google_runner import GoogleGeminiError, GoogleGeminiRunner
-from .models import GenerationJobPayload, GenerationResult
+from .models import GenerationJobPayload, GenerationRequest, GenerationResult
 from .settings import Settings, get_settings
 from .storage import ModelImageUnavailable, decode_upload_image, resolve_model_image
 
@@ -100,6 +100,33 @@ async def _generate_single_look(
         aspect=aspect,
         look_index=look_index,
     )
+
+
+def _resolve_prompts(
+    request: GenerationRequest,
+    rendered_prompt: dict[str, object],
+) -> list[str]:
+    """Resolve the effective prompts for a request.
+
+    Explicit prompt overrides are request-level input and should win over
+    renderer output when present. This keeps worker behavior aligned with the
+    registry's override semantics even for task routes that only return shared
+    defaults such as a negative prompt.
+    """
+
+    count = max(1, int(request.looks or 1))
+    overrides = [
+        str(value).strip()
+        for value in request.promptOverrides
+        if str(value).strip()
+    ]
+    if overrides:
+        prompts = overrides[:count]
+        if len(prompts) < count:
+            prompts.extend([prompts[-1]] * (count - len(prompts)))
+        return prompts
+
+    return [str(value) for value in (rendered_prompt.get("prompts") or [])]
 
 
 async def generate_looks(
@@ -207,20 +234,19 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
             model_image = await resolve_model_image(request, settings)
             model_image_mime_type = "image/png"
             
-        prompt_payload = {"request": request.model_dump(mode="json")}
         requested_task_type = str(request.style.get("task_type", "")).strip()
         resolved_task_type = requested_task_type or PROMPT_TASK_IMAGE_GENERATION_COMPOSE
 
         try:
-            rendered_prompt = resolve_prompt_task(
+            rendered_prompt = render_prompt_request(
                 resolved_task_type,
-                prompt_payload,
+                request,
                 allow_defaults_fallback=False,
             )
         except Exception:
-            rendered_prompt = resolve_prompt_task(
+            rendered_prompt = render_prompt_request(
                 PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
-                prompt_payload,
+                request,
             )
 
 
@@ -228,7 +254,7 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
             prompts = build_prompts(request)
             negative_prompt = build_negative_prompt(items=request.items)
         else:
-            prompts = list(rendered_prompt.get("prompts") or [])
+            prompts = _resolve_prompts(request, rendered_prompt)
             negative_prompt = str(rendered_prompt.get("negative_prompt") or "")
 
         runner = _get_runner()

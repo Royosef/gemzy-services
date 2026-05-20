@@ -48,7 +48,12 @@ def _settings() -> Settings:
     )
 
 
-def _payload(*, model_image_uri: str | None, model_image_base64: str | None) -> GenerationJobPayload:
+def _payload(
+    *,
+    model_image_uri: str | None,
+    model_image_base64: str | None,
+    prompt_overrides: list[str] | None = None,
+) -> GenerationJobPayload:
     return GenerationJobPayload(
         job=JobMetadata(
             id="job-1",
@@ -82,12 +87,12 @@ def _payload(*, model_image_uri: str | None, model_image_base64: str | None) -> 
             quality="2k",
             plan="Pro",
             creditsNeeded=1,
-            promptOverrides=[],
+            promptOverrides=list(prompt_overrides or []),
         ),
     )
 
 
-def _pure_jewelry_payload() -> GenerationJobPayload:
+def _pure_jewelry_payload(style: dict[str, str] | None = None) -> GenerationJobPayload:
     return GenerationJobPayload(
         job=JobMetadata(
             id="job-pure-jewelry",
@@ -113,7 +118,7 @@ def _pure_jewelry_payload() -> GenerationJobPayload:
                 imageUri=None,
                 imageBase64=None,
             ),
-            style={"task_type": "pure-jewelry", "public_version_key": "v5.2"},
+            style=style or {"task_type": "pure-jewelry", "public_version_key": "v5.2"},
             mode="ADVANCED",
             aspect="1:1",
             dims=GenerationDimensions(w=1080, h=1080),
@@ -191,7 +196,7 @@ async def test_image_edit_uses_forwarded_model_reference(
     monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
     monkeypatch.setattr(
         tasks,
-        "resolve_prompt_task",
+        "render_prompt_request",
         lambda *_args, **_kwargs: {
             "prompts": ["edit prompt"],
             "negative_prompt": "neg",
@@ -229,7 +234,7 @@ async def test_image_edit_without_forwarded_model_reference_keeps_blank_model(
     monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
     monkeypatch.setattr(
         tasks,
-        "resolve_prompt_task",
+        "render_prompt_request",
         lambda *_args, **_kwargs: {
             "prompts": ["edit prompt"],
             "negative_prompt": "neg",
@@ -249,6 +254,43 @@ async def test_image_edit_without_forwarded_model_reference_keeps_blank_model(
 
 
 @pytest.mark.anyio
+async def test_image_edit_uses_prompt_overrides_when_edit_renderer_returns_defaults_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _Runner()
+
+    async def _resolve_model_image(_request, _settings):
+        return b"resolved-model-image"
+
+    async def _safe_send_event(_settings, _job, _event):
+        return None
+
+    monkeypatch.setattr(tasks, "get_settings", _settings)
+    monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
+    monkeypatch.setattr(tasks, "resolve_model_image", _resolve_model_image)
+    monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
+    monkeypatch.setattr(
+        tasks,
+        "render_prompt_request",
+        lambda *_args, **_kwargs: {
+            "negative_prompt": "neg",
+        },
+    )
+
+    await tasks.process_generation_job(
+        _payload(
+            model_image_uri="https://example.com/original-model.png",
+            model_image_base64="bW9kZWwtaW1hZ2U=",
+            prompt_overrides=["edit prompt from override"],
+        )
+    )
+
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["prompt"] == "edit prompt from override"
+    assert runner.calls[0]["negative_prompt"] == "neg"
+
+
+@pytest.mark.anyio
 async def test_generation_task_resolution_tries_task_first_then_legacy_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -261,7 +303,7 @@ async def test_generation_task_resolution_tries_task_first_then_legacy_fallback(
     async def _safe_send_event(_settings, _job, _event):
         return None
 
-    def _resolve_prompt_task(task_type, _payload, allow_defaults_fallback=True):
+    def _render_prompt_request(task_type, _request, allow_defaults_fallback=True):
         resolve_calls.append((task_type, allow_defaults_fallback))
         if task_type == "on-model/edited":
             raise RuntimeError("route missing")
@@ -274,7 +316,7 @@ async def test_generation_task_resolution_tries_task_first_then_legacy_fallback(
     monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
     monkeypatch.setattr(tasks, "resolve_model_image", _resolve_model_image)
     monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
-    monkeypatch.setattr(tasks, "resolve_prompt_task", _resolve_prompt_task)
+    monkeypatch.setattr(tasks, "render_prompt_request", _render_prompt_request)
 
     await tasks.process_generation_job(
         _payload(
@@ -308,7 +350,7 @@ async def test_pure_jewelry_generation_does_not_forward_model_image(
     monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
     monkeypatch.setattr(
         tasks,
-        "resolve_prompt_task",
+        "render_prompt_request",
         lambda *_args, **_kwargs: {
             "prompts": ["pure jewelry prompt"],
             "negative_prompt": "neg",
@@ -321,6 +363,45 @@ async def test_pure_jewelry_generation_does_not_forward_model_image(
     assert runner.calls[0]["product_images"] == [b"source-image"]
     assert runner.calls[0]["model_image"] == b""
     assert runner.calls[0]["model_image_mime_type"] is None
+
+
+@pytest.mark.anyio
+async def test_pure_jewelry_task_normalizes_option_ids_before_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _Runner()
+
+    async def _unexpected_resolve_model_image(_request, _settings):
+        raise AssertionError("resolve_model_image should not run for pure-jewelry generations")
+
+    async def _safe_send_event(_settings, _job, _event):
+        return None
+
+    monkeypatch.setattr(tasks, "get_settings", _settings)
+    monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
+    monkeypatch.setattr(tasks, "resolve_model_image", _unexpected_resolve_model_image)
+    monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
+
+    await tasks.process_generation_job(
+        _pure_jewelry_payload(
+            style={
+                "task_type": "pure-jewelry",
+                "public_version_key": "v5.2",
+                "style_type": "pure-studio",
+                "scene": "studio-color",
+                "surface": "silk",
+                "lighting": "soft-diffused",
+                "shadow": "soft",
+                "composition": "close-up",
+                "studioColorHex": "#C0FFEE",
+            }
+        )
+    )
+
+    assert len(runner.calls) == 1
+    assert "SCENE: Studio Color" in str(runner.calls[0]["prompt"])
+    assert "SURFACE: Silk" in str(runner.calls[0]["prompt"])
+    assert "COMPOSITION: Close Up" in str(runner.calls[0]["prompt"])
 
 
 @pytest.mark.anyio
@@ -392,7 +473,7 @@ async def test_multi_look_generation_can_run_in_parallel_while_preserving_result
     monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
     monkeypatch.setattr(
         tasks,
-        "resolve_prompt_task",
+        "render_prompt_request",
         lambda *_args, **_kwargs: {
             "prompts": ["first prompt", "second prompt"],
             "negative_prompt": "neg",

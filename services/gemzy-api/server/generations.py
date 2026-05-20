@@ -746,6 +746,66 @@ def _process_upload(upload: GenerationUploadPayload) -> None:
         upload.mimeType = "image/jpeg"
 
 
+def _resolve_image_edit_storage_path(
+    payload: CreateImageEditPayload,
+) -> str | None:
+    for candidate in (
+        payload.source.storagePath,
+        payload.source.url,
+        payload.source.previewUrl,
+    ):
+        normalized = _normalize_storage_path(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
+def _hydrate_image_edit_source_upload_from_storage(
+    payload: CreateImageEditPayload,
+    *,
+    user: UserState,
+) -> None:
+    """Prefer a trusted storage-backed source image for collection edits.
+
+    Collection-backed edit requests may arrive with stale signed URLs or a
+    client-produced base64 payload that no longer represents the original
+    image. When we can resolve a user-owned storage object, reload the source
+    bytes directly from storage before running upload validation.
+    """
+
+    storage_path = _resolve_image_edit_storage_path(payload)
+    if not storage_path:
+        return
+
+    prefix = f"{_user_storage_prefix(user.id)}/"
+    if not storage_path.startswith(prefix):
+        logger.warning(
+            "Ignoring image edit storage path outside user prefix",
+            extra={"user_id": user.id, "storage_path": storage_path},
+        )
+        return
+
+    try:
+        blob = _get_collections_bucket().blob(storage_path)
+        image_bytes = blob.download_as_bytes()
+    except Exception:
+        logger.exception(
+            "Failed to hydrate image edit source from storage",
+            extra={"user_id": user.id, "storage_path": storage_path},
+        )
+        return
+
+    payload.sourceImage.base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    content_type = str(getattr(blob, "content_type", "") or "").strip()
+    if content_type.lower().startswith("image/"):
+        payload.sourceImage.mimeType = content_type
+
+    blob_size = getattr(blob, "size", None)
+    if isinstance(blob_size, int) and blob_size > 0:
+        payload.sourceImage.fileSize = blob_size
+
+
 def _persist_generation_result(
     job: GenerationJob, incoming: GenerationResultPayload
 ) -> GenerationResultPayload:
@@ -1195,6 +1255,7 @@ async def create_image_edit(
             detail="You do not have enough credits to perform this action",
         )
 
+    _hydrate_image_edit_source_upload_from_storage(payload, user=user)
     _process_upload(payload.sourceImage)
 
     job_id = uuid4().hex

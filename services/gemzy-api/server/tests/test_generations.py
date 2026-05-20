@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -437,6 +438,67 @@ def test_image_edit_targets_source_collection(monkeypatch: pytest.MonkeyPatch) -
     assert checked_collections == [("user-123", ["collection-123"])]
     assert target_collections == ["collection-123"]
     assert body["results"][0]["collectionId"] == "collection-123"
+
+
+def test_image_edit_prefers_storage_backed_source_upload_over_client_base64(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    app.dependency_overrides[generations.get_current_user] = lambda: UserState(
+        id="user-123",
+        name="Test User",
+        plan="Pro",
+        credits=20,
+        editModeTrialEditsRemaining=0,
+    )
+    test_client = TestClient(app)
+    credit_client = _CreditClient(
+        credits={"user-123": 20},
+        edit_trials={"user-123": 0},
+    )
+    mock_client = _MockAsyncClient()
+
+    class _Blob:
+        content_type = "image/png"
+        size = 68
+
+        def download_as_bytes(self) -> bytes:
+            return base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W8YQAAAAASUVORK5CYII="
+            )
+
+    class _Bucket:
+        def blob(self, name: str) -> _Blob:
+            assert name == "user-123/collections/source-image.png"
+            return _Blob()
+
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: mock_client)
+    monkeypatch.setattr("server.generations._persist_generation_result", lambda job, result: result)
+    monkeypatch.setattr("server.generations._publish_image_edit_completed_notification", lambda job: None)
+    monkeypatch.setattr(generations, "_get_collections_bucket", lambda: _Bucket())
+    reset_jobs()
+
+    payload = _image_edit_payload()
+    payload["sourceImage"]["base64"] = (
+        "PD94bWwgdmVyc2lvbj0nMS4wJyBlbmNvZGluZz0nVVRGLTgnPz48RXJyb3I+PENvZGU+"
+        "RXhwaXJlZFRva2VuPC9Db2RlPjxNZXNzYWdlPkludmFsaWQgYXJndW1lbnQuPC9NZXNzYWdl"
+        "PjxEZXRhaWxzPlRoZSBwcm92aWRlZCB0b2tlbiBoYXMgZXhwaXJlZC48L0RldGFpbHM+PC9FcnJvcj4="
+    )
+    payload["source"]["storagePath"] = "user-123/collections/source-image.png"
+
+    response = test_client.post("/generations/edits", json=payload)
+
+    assert response.status_code == 200
+    assert mock_client.calls, "Expected the image edit request to be forwarded"
+    forwarded = mock_client.calls[0][1]["request"]
+    assert (
+        forwarded["uploads"][0]["base64"]
+        == "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W8YQAAAAASUVORK5CYII="
+    )
+    assert forwarded["uploads"][0]["mimeType"] == "image/png"
+    assert forwarded["uploads"][0]["fileSize"] == 68
 
 
 def test_image_edit_forwards_source_metadata_and_real_model(
