@@ -45,6 +45,10 @@ class Settings:
     google_gemini_use_vertex_ai: bool
     google_cloud_project: Optional[str]
     google_cloud_location: Optional[str]
+    google_gemini_max_retries: int = 4
+    google_gemini_retry_initial_delay: float = 1.0
+    google_gemini_retry_max_delay: float = 16.0
+    google_gemini_retry_jitter: float = 0.25
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -87,7 +91,7 @@ class Settings:
                 )
             if not google_gemini_model:
                 google_gemini_model = "gemini-2.5-flash-image"
-        default_job_look_concurrency = "2" if provider == "google_gemini" else "1"
+        default_job_look_concurrency = "1"
 
         return cls(
             shared_secret=shared_secret,
@@ -117,6 +121,19 @@ class Settings:
             google_gemini_use_vertex_ai=google_gemini_use_vertex_ai,
             google_cloud_project=google_cloud_project,
             google_cloud_location=google_cloud_location,
+            google_gemini_max_retries=max(0, int(os.getenv("GOOGLE_GEMINI_MAX_RETRIES", "4"))),
+            google_gemini_retry_initial_delay=max(
+                0.0,
+                float(os.getenv("GOOGLE_GEMINI_RETRY_INITIAL_DELAY", "1")),
+            ),
+            google_gemini_retry_max_delay=max(
+                0.0,
+                float(os.getenv("GOOGLE_GEMINI_RETRY_MAX_DELAY", "16")),
+            ),
+            google_gemini_retry_jitter=max(
+                0.0,
+                float(os.getenv("GOOGLE_GEMINI_RETRY_JITTER", "0.25")),
+            ),
         )
 
 

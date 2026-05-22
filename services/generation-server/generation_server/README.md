@@ -25,7 +25,14 @@ and incremental result delivery.
    - `GOOGLE_CLOUD_PROJECT`: Required when Vertex AI is enabled.
    - `GOOGLE_CLOUD_LOCATION`: Optional when Vertex AI is enabled. Defaults to
      `global`.
-   - `GOOGLE_GEMINI_MODEL` and `GOOGLE_GEMINI_TIMEOUT`: Optional tuning knobs.
+    - `GOOGLE_GEMINI_MODEL` and `GOOGLE_GEMINI_TIMEOUT`: Optional tuning knobs.
+    - `GOOGLE_GEMINI_MAX_RETRIES`, `GOOGLE_GEMINI_RETRY_INITIAL_DELAY`,
+      `GOOGLE_GEMINI_RETRY_MAX_DELAY`, and `GOOGLE_GEMINI_RETRY_JITTER`:
+      Optional retry tuning for transient `429`/`5xx` provider failures.
+    - `GENERATION_WORKER_CONCURRENCY` and `GENERATION_JOB_LOOK_CONCURRENCY`:
+      Optional throughput controls. For Gemini and Vertex image generation, start
+      with `1` and only raise them after measuring `429 RESOURCE_EXHAUSTED`
+      rates.
 2. Install dependencies and start the service:
 
 ```sh

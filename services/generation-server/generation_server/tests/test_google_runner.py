@@ -91,7 +91,16 @@ class DummyModels:
                 "config": config,
             }
         )
-        return self._client.response
+        response = self._client.response
+        if isinstance(response, list):
+            if not response:
+                raise AssertionError("response sequence exhausted")
+            current = response.pop(0)
+        else:
+            current = response
+        if isinstance(current, Exception):
+            raise current
+        return current
 
 
 class DummyClient:
@@ -99,6 +108,13 @@ class DummyClient:
         self.calls = []
         self.response = response
         self.models = DummyModels(self)
+
+
+class FakeClientError(Exception):
+    def __init__(self, code, message, *, retry_after=None):
+        super().__init__(message)
+        self.code = code
+        self.retry_after = retry_after
 
 
 def test_generate_returns_bytes():
@@ -254,6 +270,71 @@ def test_generate_missing_payload_raises():
                 look_index=1,
             )
         )
+
+
+def test_generate_retries_retryable_quota_errors(monkeypatch: pytest.MonkeyPatch):
+    response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
+    client = DummyClient(
+        [
+            FakeClientError(429, "429 RESOURCE_EXHAUSTED", retry_after=0.5),
+            response,
+        ]
+    )
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(google_runner.time, "sleep", lambda delay: sleep_calls.append(delay))
+    monkeypatch.setattr(google_runner.random, "uniform", lambda low, high: high)
+
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        model="gemini-test",
+        max_retries=2,
+        client=client,
+    )
+
+    result = asyncio.run(
+        runner.generate(
+            prompt="prompt",
+            negative_prompt="",
+            product_images=[],
+            model_image=b"",
+            aspect="1:1",
+            look_index=0,
+        )
+    )
+
+    assert result == b"image-bytes"
+    assert len(client.calls) == 2
+    assert sleep_calls == [0.625]
+
+
+def test_generate_does_not_retry_non_retryable_errors(monkeypatch: pytest.MonkeyPatch):
+    client = DummyClient([FakeClientError(400, "400 INVALID_ARGUMENT")])
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(google_runner.time, "sleep", lambda delay: sleep_calls.append(delay))
+
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        model="gemini-test",
+        max_retries=2,
+        client=client,
+    )
+
+    with pytest.raises(FakeClientError):
+        asyncio.run(
+            runner.generate(
+                prompt="prompt",
+                negative_prompt="",
+                product_images=[],
+                model_image=b"",
+                aspect="1:1",
+                look_index=0,
+            )
+        )
+
+    assert len(client.calls) == 1
+    assert sleep_calls == []
 
 
 def test_generate_blocked_payload_includes_feedback():

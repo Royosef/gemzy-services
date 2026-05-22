@@ -54,6 +54,10 @@ def _get_runner() -> GenerationRunner:
                 vertex_project=settings.google_cloud_project,
                 vertex_location=settings.google_cloud_location,
                 timeout=settings.google_gemini_timeout,
+                max_retries=settings.google_gemini_max_retries,
+                retry_initial_delay=settings.google_gemini_retry_initial_delay,
+                retry_max_delay=settings.google_gemini_retry_max_delay,
+                retry_jitter=settings.google_gemini_retry_jitter,
             )
         else:
             _runner = ComfyWorkflowRunner(settings.output_dir)

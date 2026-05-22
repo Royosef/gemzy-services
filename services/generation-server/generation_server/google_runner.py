@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import random
+import re
+import time
 from typing import Any, Iterable, Literal, Sequence
 
 try:
@@ -32,6 +35,10 @@ class GoogleGeminiRunner:
         vertex_project: str | None = None,
         vertex_location: str | None = None,
         timeout: float = 120.0,
+        max_retries: int = 4,
+        retry_initial_delay: float = 1.0,
+        retry_max_delay: float = 16.0,
+        retry_jitter: float = 0.25,
         client: genai.Client | None = None,
     ) -> None:
         if not model:
@@ -46,6 +53,10 @@ class GoogleGeminiRunner:
 
         self._model = model
         self._timeout = timeout
+        self._max_retries = max(0, int(max_retries))
+        self._retry_initial_delay = max(0.0, float(retry_initial_delay))
+        self._retry_max_delay = max(0.0, float(retry_max_delay))
+        self._retry_jitter = max(0.0, float(retry_jitter))
         if client is not None:
             self._client = client
         else:
@@ -131,10 +142,9 @@ class GoogleGeminiRunner:
             ),
         )
 
-        response = self._client.models.generate_content(
-            model=self._model,
+        response = self._generate_content_with_retries(
             contents=contents,
-            config=generation_config,
+            generation_config=generation_config,
         )
 
         image_bytes = self._extract_image_bytes(response)
@@ -154,6 +164,110 @@ class GoogleGeminiRunner:
             raise GoogleGeminiError("Unexpected image payload type returned by Google Gemini")
 
         return bytes(image_bytes)
+
+    def _generate_content_with_retries(
+        self,
+        *,
+        contents: Sequence[Any],
+        generation_config: Any,
+    ) -> Any:
+        attempt = 0
+        while True:
+            try:
+                return self._client.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=generation_config,
+                )
+            except Exception as exc:
+                if attempt >= self._max_retries or not self._is_retryable_error(exc):
+                    raise
+                delay = self._compute_retry_delay(exc=exc, attempt=attempt)
+                time.sleep(delay)
+                attempt += 1
+
+    def _compute_retry_delay(self, *, exc: Exception, attempt: int) -> float:
+        retry_after = self._extract_retry_after_seconds(exc)
+        if retry_after is not None:
+            base_delay = retry_after
+        else:
+            base_delay = self._retry_initial_delay * (2**attempt)
+        capped_delay = min(self._retry_max_delay, max(0.0, base_delay))
+        if capped_delay <= 0.0:
+            return 0.0
+        if self._retry_jitter <= 0.0:
+            return capped_delay
+        lower_bound = max(0.0, capped_delay * (1.0 - self._retry_jitter))
+        upper_bound = capped_delay * (1.0 + self._retry_jitter)
+        return random.uniform(lower_bound, upper_bound)
+
+    @staticmethod
+    def _extract_retry_after_seconds(exc: Exception) -> float | None:
+        for attr_name in ("retry_after", "retry_after_seconds"):
+            value = getattr(exc, attr_name, None)
+            parsed = GoogleGeminiRunner._parse_seconds(value)
+            if parsed is not None:
+                return parsed
+
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            try:
+                value = headers.get("retry-after")
+            except Exception:  # pragma: no cover - defensive for odd header types
+                value = None
+            parsed = GoogleGeminiRunner._parse_seconds(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    @staticmethod
+    def _parse_seconds(value: object) -> float | None:
+        if value is None:
+            return None
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, seconds)
+
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        status_code = GoogleGeminiRunner._extract_status_code(exc)
+        if status_code in {429, 500, 502, 503, 504}:
+            return True
+
+        message = str(exc).upper()
+        retryable_markers = (
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "INTERNAL",
+            "TOO MANY REQUESTS",
+        )
+        return any(marker in message for marker in retryable_markers)
+
+    @staticmethod
+    def _extract_status_code(exc: Exception) -> int | None:
+        for attr_name in ("status_code", "code"):
+            value = getattr(exc, attr_name, None)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+
+        response = getattr(exc, "response", None)
+        for attr_name in ("status_code", "code"):
+            value = getattr(response, attr_name, None)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+
+        match = re.search(r"\b(429|500|502|503|504)\b", str(exc))
+        if match:
+            return int(match.group(1))
+        return None
 
     def _build_contents(
         self,
