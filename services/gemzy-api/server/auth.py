@@ -515,6 +515,28 @@ def _build_user_state(
     )
 
 
+def _maybe_reconcile_profile_from_revenuecat(user_id: str, profile: dict | None) -> dict | None:
+    """Keep auth responses aligned with RevenueCat without blocking login on RC issues."""
+    try:
+        from .payments import reconcile_subscription_profile_from_revenuecat
+
+        reconciled_profile = reconcile_subscription_profile_from_revenuecat(
+            user_id,
+            current_profile=profile,
+        )
+        return reconciled_profile if reconciled_profile is not None else profile
+    except HTTPException as exc:
+        logger.info(
+            "Skipping RevenueCat auth-time reconciliation for %s: status=%s detail=%s",
+            user_id,
+            exc.status_code,
+            exc.detail,
+        )
+    except Exception:
+        logger.exception("Failed RevenueCat auth-time reconciliation for %s", user_id)
+    return profile
+
+
 @router.post("/send")
 @limiter.limit(LIMIT_auth_send)
 def send_magic_link(request: Request, data: MagicLinkRequest) -> dict:
@@ -576,6 +598,7 @@ def verify_magic_link(request: Request, data: VerifyRequest) -> AuthResponse:
         res.user.id, metadata=metadata, profile=profile, client=admin_client
     )
     profile = profile or {}
+    profile = _maybe_reconcile_profile_from_revenuecat(res.user.id, profile) or {}
 
     profile = _ensure_monthly_credits(res.user.id, profile.get("plan"), profile)
     return AuthResponse(
@@ -839,6 +862,7 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
         time.perf_counter() - clear_deactivation_started,
     )
     profile = profile or {}
+    profile = _maybe_reconcile_profile_from_revenuecat(res.user.id, profile) or {}
 
     credits_started = time.perf_counter()
     profile = _ensure_monthly_credits(res.user.id, profile.get("plan"), profile)
@@ -900,6 +924,7 @@ def get_current_user(
         res.user.id, metadata=metadata, profile=profile, client=admin_client
     )
     profile = profile or {}
+    profile = _maybe_reconcile_profile_from_revenuecat(res.user.id, profile) or {}
     profile = _ensure_monthly_credits(res.user.id, profile.get("plan"), profile)
     return _build_user_state(
         res.user.id,

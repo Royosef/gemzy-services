@@ -237,6 +237,40 @@ def _fetch_current_profile(sb, user_id: str) -> dict | None:
         return None
 
 
+def _sync_rc_subscriber_request(client: httpx.Client, url: str, headers: dict[str, str]) -> httpx.Response:
+    resp = client.get(url, headers=headers)
+    if resp.status_code == 401:
+        fallback_headers = {
+            "Authorization": RC_API_KEY or "",
+            "Content-Type": "application/json",
+        }
+        resp = client.get(url, headers=fallback_headers)
+    return resp
+
+
+def _parse_rc_subscriber_response(app_user_id: str, resp: httpx.Response) -> dict:
+    if resp.status_code >= 400:
+        logger.warning(
+            "[Sync] RevenueCat error for %s: status=%s body=%s",
+            app_user_id,
+            resp.status_code,
+            resp.text[:500],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="RevenueCat sync failed",
+        )
+
+    data = resp.json()
+    subscriber = data.get("subscriber")
+    if not isinstance(subscriber, dict):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Invalid RevenueCat response",
+        )
+    return subscriber
+
+
 def _parse_rc_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -316,26 +350,72 @@ async def _fetch_rc_subscriber(app_user_id: str) -> dict:
             detail="Failed to reach RevenueCat",
         ) from exc
 
-    if resp.status_code >= 400:
-        logger.warning(
-            "[Sync] RevenueCat error for %s: status=%s body=%s",
-            app_user_id,
-            resp.status_code,
-            resp.text[:500],
-        )
+    return _parse_rc_subscriber_response(app_user_id, resp)
+
+
+def _fetch_rc_subscriber_sync(app_user_id: str) -> dict:
+    if not RC_API_KEY:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="RevenueCat sync failed",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="RevenueCat sync not configured",
         )
 
-    data = resp.json()
-    subscriber = data.get("subscriber")
-    if not isinstance(subscriber, dict):
+    url = f"{RC_API_BASE.rstrip('/')}/v1/subscribers/{app_user_id}"
+    headers = {
+        "Authorization": f"Bearer {RC_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = _sync_rc_subscriber_request(client, url, headers)
+    except httpx.RequestError as exc:
+        logger.exception("[Sync] RevenueCat request failed for %s", app_user_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Invalid RevenueCat response",
+            detail="Failed to reach RevenueCat",
+        ) from exc
+
+    return _parse_rc_subscriber_response(app_user_id, resp)
+
+
+def reconcile_subscription_profile_from_revenuecat(
+    user_id: str,
+    *,
+    current_profile: dict | None = None,
+) -> dict | None:
+    """Best-effort profile reconciliation against RevenueCat for auth-time refreshes."""
+    subscriber = _fetch_rc_subscriber_sync(user_id)
+    if _has_subscription_account_mismatch(user_id, subscriber.get("original_app_user_id")):
+        logger.warning(
+            "[Auth Sync] Ignoring account ownership mismatch: app_user_id=%s original_app_user_id=%s",
+            user_id,
+            subscriber.get("original_app_user_id"),
         )
-    return subscriber
+        return current_profile
+
+    new_tier, expires_at = _rc_subscriber_to_plan_and_expiry(subscriber)
+    logger.info("[Auth Sync] User %s reconciled to %s from RevenueCat", user_id, new_tier)
+
+    sb = get_client()
+    base_profile = current_profile or _fetch_current_profile(sb, user_id) or {}
+    current_plan = base_profile.get("plan", "Free")
+    current_credits = base_profile.get("credits", 0)
+
+    update_data: dict[str, object] = {"plan": new_tier}
+    if expires_at is not None:
+        update_data["subscription_expires_at"] = expires_at
+    elif new_tier == "Free":
+        update_data["subscription_expires_at"] = None
+
+    if is_upgrade(current_plan, new_tier) or (current_plan != new_tier and new_tier == "Free"):
+        new_allocation = get_plan_initial_credits(new_tier)
+        if current_credits < new_allocation:
+            update_data["credits"] = new_allocation
+            update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+
+    sb.table("profiles").update(update_data).eq("id", user_id).execute()
+    return {**base_profile, **update_data}
 
 
 @router.post("/webhook")

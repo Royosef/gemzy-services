@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import auth
+from server import auth, payments
 
 
 class _FailingServiceAuth:
@@ -105,6 +105,46 @@ def test_get_current_user_uses_user_client(monkeypatch) -> None:
     assert user_client.auth.get_user_calls == ["user-token"]
 
 
+def test_get_current_user_reconciles_profile_from_revenuecat(monkeypatch) -> None:
+    service_client = _FailingServiceClient()
+    user_client = _UserClient()
+
+    monkeypatch.setattr(auth, "create_user_client", lambda: user_client)
+    monkeypatch.setattr(auth, "get_service_role_client", lambda fresh=False: service_client)
+    monkeypatch.setattr(
+        auth,
+        "_ensure_profile_exists",
+        lambda user_id, metadata, client=None, provided_name=None: ({"plan": "Free", "credits": 5}, False),
+    )
+    monkeypatch.setattr(
+        auth,
+        "clear_user_deactivation",
+        lambda *args, **kwargs: ({}, {"plan": "Free", "credits": 5}, None),
+    )
+    monkeypatch.setattr(
+        payments,
+        "reconcile_subscription_profile_from_revenuecat",
+        lambda user_id, current_profile=None: {**(current_profile or {}), "plan": "Pro", "credits": 30},
+    )
+    monkeypatch.setattr(auth, "_ensure_monthly_credits", lambda user_id, plan, profile: profile)
+    monkeypatch.setattr(
+        auth,
+        "_build_user_state",
+        lambda user_id, profile, metadata, created_at=None, auth_user=None: {
+            "id": user_id,
+            "plan": profile.get("plan"),
+            "credits": profile.get("credits", 0),
+        },
+    )
+
+    current = auth.get_current_user(
+        HTTPAuthorizationCredentials(scheme="Bearer", credentials="user-token")
+    )
+
+    assert current["plan"] == "Pro"
+    assert current["credits"] == 30
+
+
 def test_refresh_token_uses_user_client(monkeypatch) -> None:
     service_client = _FailingServiceClient()
     user_client = _UserClient()
@@ -117,6 +157,59 @@ def test_refresh_token_uses_user_client(monkeypatch) -> None:
     assert token.access == "access-token"
     assert token.refresh == "refresh-token"
     assert user_client.auth.refresh_calls == ["refresh-me"]
+
+
+def test_verify_magic_link_reconciles_profile_from_revenuecat(monkeypatch) -> None:
+    service_client = _FailingServiceClient()
+
+    class _VerifyAuthClient:
+        def verify_otp(self, payload: dict) -> SimpleNamespace:
+            assert payload == {
+                "email": "user@example.com",
+                "token": "123456",
+                "type": "email",
+            }
+            return SimpleNamespace(user=_FakeUser(), session=_FakeSession())
+
+    verify_client = SimpleNamespace(auth=_VerifyAuthClient())
+
+    app = FastAPI()
+    app.include_router(auth.router)
+    client = TestClient(app)
+
+    monkeypatch.setattr(auth, "create_user_client", lambda: verify_client)
+    monkeypatch.setattr(auth, "get_service_role_client", lambda fresh=False: service_client)
+    monkeypatch.setattr(
+        auth,
+        "_ensure_profile_exists",
+        lambda user_id, metadata, client=None, provided_name=None: ({"plan": "Free", "credits": 5}, False),
+    )
+    monkeypatch.setattr(
+        auth,
+        "clear_user_deactivation",
+        lambda *args, **kwargs: ({}, {"plan": "Free", "credits": 5}, None),
+    )
+    monkeypatch.setattr(
+        payments,
+        "reconcile_subscription_profile_from_revenuecat",
+        lambda user_id, current_profile=None: {**(current_profile or {}), "plan": "Pro", "credits": 40},
+    )
+    monkeypatch.setattr(auth, "_ensure_monthly_credits", lambda user_id, plan, profile: profile)
+    monkeypatch.setattr(
+        auth,
+        "_build_user_state",
+        lambda user_id, profile, metadata, created_at=None, auth_user=None: {
+            "id": user_id,
+            "plan": profile.get("plan"),
+            "credits": profile.get("credits", 0),
+        },
+    )
+
+    response = client.post("/auth/verify", json={"email": "user@example.com", "token": "123456"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["plan"] == "Pro"
+    assert response.json()["user"]["credits"] == 40
 
 
 def test_refresh_token_returns_503_for_transient_refresh_failures(monkeypatch) -> None:
@@ -194,6 +287,11 @@ def test_oauth_login_uses_user_client(monkeypatch) -> None:
             "credits": profile.get("credits", 0),
         },
     )
+    monkeypatch.setattr(
+        payments,
+        "reconcile_subscription_profile_from_revenuecat",
+        lambda user_id, current_profile=None: {**(current_profile or {}), "plan": "Designer", "credits": 50},
+    )
 
     response = client.post("/auth/oauth", json={"provider": "google", "token": "auth-code"})
 
@@ -202,6 +300,8 @@ def test_oauth_login_uses_user_client(monkeypatch) -> None:
     assert user_client.auth.oauth_calls == [
         {"provider": "google", "token": "header.payload.sig", "access_token": "google-at"}
     ]
+    assert response.json()["user"]["plan"] == "Designer"
+    assert response.json()["user"]["credits"] == 50
 
 
 def test_oauth_login_forwards_google_redirect_uri(monkeypatch) -> None:
