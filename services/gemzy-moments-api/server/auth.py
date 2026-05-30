@@ -25,6 +25,8 @@ from fastapi import (
 )
 
 import httpx
+from google.auth.transport import requests as google_auth_requests
+from google.oauth2 import id_token as google_id_token
 from fastapi.responses import RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from postgrest.exceptions import APIError
@@ -80,6 +82,27 @@ AVATAR_ALLOWED_CONTENT_TYPES = {
 
 GOOGLE_WEB_CLIENT_ID = os.getenv("GOOGLE_WEB_CLIENT_ID")
 GOOGLE_WEB_CLIENT_SECRET = os.getenv("GOOGLE_WEB_CLIENT_SECRET")
+
+
+def _verify_google_id_token(token: str) -> dict:
+    """Verify a Google ID token and return its payload."""
+
+    if not GOOGLE_WEB_CLIENT_ID:
+        raise HTTPException(500, "Google web client ID is not configured")
+
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            token,
+            google_auth_requests.Request(),
+            GOOGLE_WEB_CLIENT_ID,
+        )
+    except Exception as exc:
+        raise HTTPException(400, "Invalid Google ID token") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid Google ID token")
+
+    return payload
 
 
 def _get_avatar_bucket():
@@ -526,16 +549,26 @@ async def oauth_login(data: OAuthRequest) -> AuthResponse:
         res = sb.auth.sign_in_with_id_token(payload)
         
     elif data.provider == "google":
-        tokens = await exchange_google_code(data.token)
-        id_token = tokens.get("id_token")
-        access_token = tokens.get("access_token")
-        if not id_token or not access_token:
-            raise HTTPException(400, "Google exchange did not return id_token/access_token")
+        if data.tokenType == "id_token":
+            google_payload = _verify_google_id_token(data.token)
+            if data.nonce and google_payload.get("nonce") != data.nonce:
+                raise HTTPException(400, "Google nonce mismatch")
+            raw_id_token = data.token
+            payload = {"provider": "google", "token": data.token}
+            if data.nonce:
+                payload["nonce"] = data.nonce
+            res = sb.auth.sign_in_with_id_token(payload)
+        else:
+            tokens = await exchange_google_code(data.token)
+            id_token = tokens.get("id_token")
+            access_token = tokens.get("access_token")
+            if not id_token or not access_token:
+                raise HTTPException(400, "Google exchange did not return id_token/access_token")
 
-        raw_id_token = id_token
-        res = sb.auth.sign_in_with_id_token(
-            {"provider": "google", "token": id_token, "access_token": access_token}
-        )
+            raw_id_token = id_token
+            res = sb.auth.sign_in_with_id_token(
+                {"provider": "google", "token": id_token, "access_token": access_token}
+            )
     else:
         raise HTTPException(400, "Unsupported provider")
 

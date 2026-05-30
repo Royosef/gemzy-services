@@ -138,3 +138,24 @@ def test_oauth_login_blocks_when_email_missing(monkeypatch: pytest.MonkeyPatch, 
     )
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_oauth_login_allows_google_id_token_without_exchange(
+    monkeypatch: pytest.MonkeyPatch, app: TestClient
+) -> None:
+    token = _jwt_with_email("allowed@example.com")
+
+    monkeypatch.setattr(
+        auth,
+        "_verify_google_id_token",
+        lambda received: {"email": "allowed@example.com"},
+    )
+
+    response = app.post(
+        "/auth/oauth",
+        json={"provider": "google", "token": token, "tokenType": "id_token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["user"]["id"] == "user-123"

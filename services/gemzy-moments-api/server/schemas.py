@@ -28,6 +28,7 @@ class VerifyRequest(BaseModel):
 class OAuthRequest(BaseModel):
     provider: Literal["google", "apple"]
     token: str
+    tokenType: Literal["auth_code", "id_token"] | None = None
     nonce: str | None = None
     name: str | None = None
 
