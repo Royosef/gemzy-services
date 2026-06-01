@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 
 from google import genai
 from google.genai import types
@@ -18,12 +17,24 @@ from .models import (
     PlannerRankRequest,
     PlannerRankResponse,
 )
+from .settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 def _get_client() -> genai.Client | None:
-    api_key = os.getenv("GOOGLE_GEMINI_API_KEY", "").strip()
+    settings = get_settings()
+    if settings.provider != "google_gemini":
+        return None
+    if settings.google_gemini_use_vertex_ai:
+        if not settings.google_cloud_project:
+            return None
+        return genai.Client(
+            vertexai=True,
+            project=settings.google_cloud_project,
+            location=settings.google_cloud_location or "global",
+        )
+    api_key = (settings.google_gemini_api_key or "").strip()
     if not api_key:
         return None
     return genai.Client(api_key=api_key)
@@ -33,6 +44,9 @@ async def run_planner_enrichment(request: PlannerEnrichRequest) -> PlannerEnrich
     """Uses Gemini to generate the day arc and moments based on the user prompt."""
     client = _get_client()
     if not client:
+        settings = get_settings()
+        if settings.google_gemini_use_vertex_ai:
+            raise ValueError("Vertex AI is not configured for planner enrichment")
         raise ValueError("GOOGLE_GEMINI_API_KEY is not configured")
 
     rendered = resolve_prompt_task(
@@ -72,6 +86,9 @@ async def run_planner_ranking(request: PlannerRankRequest) -> PlannerRankRespons
     """Uses Gemini to score moments and allocate the best formats (Stoy vs Post)."""
     client = _get_client()
     if not client:
+        settings = get_settings()
+        if settings.google_gemini_use_vertex_ai:
+            raise ValueError("Vertex AI is not configured for planner ranking")
         raise ValueError("GOOGLE_GEMINI_API_KEY is not configured")
 
     rendered = resolve_prompt_task(

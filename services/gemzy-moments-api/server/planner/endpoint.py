@@ -108,8 +108,11 @@ async def _call_ai_enrich(
             logger.warning("AI enrichment returned %d: %s", resp.status_code, resp.text[:200])
             return None
         return resp.json()
-    except Exception as exc:
-        logger.warning("AI enrichment call failed: %s", exc)
+    except Exception:
+        logger.exception(
+            "AI enrichment call failed while calling %s/planner/enrich",
+            base_url.rstrip("/"),
+        )
         return None
 
 
@@ -146,8 +149,11 @@ async def _call_ai_rank(
             logger.warning("AI ranking returned %d: %s", resp.status_code, resp.text[:200])
             return None
         return resp.json()
-    except Exception as exc:
-        logger.warning("AI ranking call failed: %s", exc)
+    except Exception:
+        logger.exception(
+            "AI ranking call failed while calling %s/planner/rank",
+            base_url.rstrip("/"),
+        )
         return None
 
 

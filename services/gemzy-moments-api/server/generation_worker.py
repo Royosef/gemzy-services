@@ -25,6 +25,7 @@ import os
 from datetime import datetime, timezone
 
 import httpx
+from postgrest.exceptions import APIError
 
 from . import storage
 from .supabase_client import get_client
@@ -44,10 +45,48 @@ MAX_CONCURRENT = int(os.getenv("GENERATION_MAX_CONCURRENT", "3"))
 MAX_ATTEMPTS = int(os.getenv("GENERATION_MAX_ATTEMPTS", "3"))
 REFERENCE_IMAGE_TIMEOUT = float(os.getenv("GENERATION_REFERENCE_IMAGE_TIMEOUT", "20"))
 REFERENCE_IMAGE_MAX_BYTES = int(os.getenv("GENERATION_REFERENCE_IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))
+_REFERENCE_ASSETS_AVAILABLE: bool | None = None
 
 
 def _db():
     return get_client()
+
+
+def _is_reference_assets_missing_error(exc: Exception) -> bool:
+    if isinstance(exc, APIError):
+        code = str(getattr(exc, "code", "") or "")
+        message = str(getattr(exc, "message", "") or "")
+        if not message and hasattr(exc, "json"):
+            try:
+                payload = exc.json()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                code = code or str(payload.get("code") or "")
+                message = str(payload.get("message") or "")
+        return code == "PGRST205" and "reference_assets" in message
+
+    payload = exc.args[0] if exc.args else None
+    if isinstance(payload, dict):
+        code = str(payload.get("code") or "")
+        message = str(payload.get("message") or "")
+        return code == "PGRST205" and "reference_assets" in message
+
+    return False
+
+
+def _reference_assets_enabled() -> bool:
+    return _REFERENCE_ASSETS_AVAILABLE is not False
+
+
+def _disable_reference_assets(exc: Exception) -> None:
+    global _REFERENCE_ASSETS_AVAILABLE
+    if _is_reference_assets_missing_error(exc):
+        if _REFERENCE_ASSETS_AVAILABLE is not False:
+            logger.warning(
+                "people.reference_assets is unavailable in this environment; skipping reference asset lookups and promotions"
+            )
+        _REFERENCE_ASSETS_AVAILABLE = False
 
 
 # ═══════════════════════════════════════════════════════════
@@ -88,9 +127,29 @@ def _build_prompt_from_context(
     # Moment type
     moment_type = moment.get("moment_type", "STORY")
     if moment_type == "POST":
-        parts.append("Format: Instagram post (square, high quality)")
+        parts.append("Format: Instagram feed post (square, high quality)")
+        parts.append(
+            "Composition: render the image as a polished Instagram feed post screenshot, "
+            "with subtle in-app UI chrome around the photo such as a clean profile header, "
+            "feed framing, and understated social controls."
+        )
+        parts.append(
+            "UI guidance: preserve the generated photo as the hero image, keep interface "
+            "details elegant and minimal, use simple believable icons, and avoid dense or "
+            "gibberish text."
+        )
     else:
         parts.append("Format: Instagram story (vertical 9:16)")
+        parts.append(
+            "Composition: render the image as a premium Instagram Story screen capture, "
+            "with recognizable story UI like a slim top progress bar, a profile/header row, "
+            "and subtle reply or action affordances near the bottom."
+        )
+        parts.append(
+            "UI guidance: keep the scene full-bleed and immersive, reserve safe margins for "
+            "story chrome, make the interface refined and believable, and avoid heavy text "
+            "blocks or garbled lettering."
+        )
 
     # Location context
     if context and location:
@@ -224,7 +283,7 @@ async def _download_reference_image(url: str | None) -> tuple[bytes, str] | None
 
 
 def _fetch_reference_asset(asset_id: str | None) -> dict | None:
-    if not asset_id:
+    if not asset_id or not _reference_assets_enabled():
         return None
 
     try:
@@ -238,12 +297,18 @@ def _fetch_reference_asset(asset_id: str | None) -> dict | None:
             .execute()
         )
         return result.data
-    except Exception:
+    except Exception as exc:
+        _disable_reference_assets(exc)
+        if not _reference_assets_enabled():
+            return None
         logger.exception("Failed to fetch reference asset %s", asset_id)
         return None
 
 
 def _list_persona_reference_assets(persona_id: str, limit: int = 3) -> list[dict]:
+    if not _reference_assets_enabled():
+        return []
+
     try:
         result = (
             _db()
@@ -261,7 +326,10 @@ def _list_persona_reference_assets(persona_id: str, limit: int = 3) -> list[dict
             .execute()
         )
         return result.data or []
-    except Exception:
+    except Exception as exc:
+        _disable_reference_assets(exc)
+        if not _reference_assets_enabled():
+            return []
         logger.exception("Failed to list persona reference assets for %s", persona_id)
         return []
 
@@ -317,7 +385,7 @@ def _promote_reference_assets(
     result_urls: list[str],
     job_id: str,
 ) -> None:
-    if not persona or not result_urls:
+    if not persona or not result_urls or not _reference_assets_enabled():
         return
 
     primary_url = next((url for url in result_urls if url), None)
@@ -359,7 +427,10 @@ def _promote_reference_assets(
                 "is_canonical": True,
                 "updated_at": now,
             }).eq("id", asset_id).execute()
-    except Exception:
+    except Exception as exc:
+        _disable_reference_assets(exc)
+        if not _reference_assets_enabled():
+            return
         logger.exception("Failed to promote persona reference asset for moment %s", moment.get("id"))
 
     if not location:
@@ -389,7 +460,10 @@ def _promote_reference_assets(
         db.schema(PEOPLE_SCHEMA).table("world_locations").update({
             "ref_asset_id": location_asset_id,
         }).eq("id", location.get("id")).execute()
-    except Exception:
+    except Exception as exc:
+        _disable_reference_assets(exc)
+        if not _reference_assets_enabled():
+            return
         logger.exception("Failed to promote location reference asset for location %s", location.get("id"))
 
 

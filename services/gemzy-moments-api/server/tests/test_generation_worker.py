@@ -9,11 +9,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from postgrest.exceptions import APIError
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from server import generation_worker
 from server.generation_worker import _build_prompt_from_context
 
 
@@ -109,3 +111,16 @@ class TestBuildPrompt:
         persona = {"id": "p-1", "display_name": "Sam", "bio": None}
         prompt = _build_prompt_from_context(moment, None, persona, None, None)
         assert "Sam" in prompt
+
+
+def test_reference_assets_missing_error_detected():
+    exc = APIError(
+        {
+            "message": "Could not find the table 'people.reference_assets' in the schema cache",
+            "code": "PGRST205",
+            "hint": None,
+            "details": None,
+        }
+    )
+
+    assert generation_worker._is_reference_assets_missing_error(exc) is True

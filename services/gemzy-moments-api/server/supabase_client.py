@@ -9,8 +9,13 @@ from supabase import AsyncClient, Client, create_async_client, create_client
 
 from pathlib import Path
 
-env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
+for env_path in (
+    Path(__file__).resolve().parent.parent / ".env",
+    Path(__file__).resolve().parent / ".env",
+):
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=False)
+        break
 
 
 def _create_client(key: str) -> Client:
@@ -34,9 +39,14 @@ def _service_role_key() -> str:
     return key
 
 
-@lru_cache
 def get_client() -> Client:
-    """Return a cached Supabase client instance."""
+    """Return a fresh Supabase client instance.
+
+    The Moments API uses the sync client from async request handlers and a
+    background worker. Returning a fresh client avoids sharing one underlying
+    HTTP/2 session across concurrent tasks, which has been causing intermittent
+    transport errors in practice.
+    """
 
     return _create_client(_service_role_key())
 

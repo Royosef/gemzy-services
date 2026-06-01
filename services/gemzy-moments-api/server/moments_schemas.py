@@ -154,6 +154,13 @@ TimeOfDay = Literal["morning", "midday", "afternoon", "evening", "late_night"]
 MomentType = Literal["STORY", "POST"]
 MomentStatus = Literal["PLANNED", "APPROVED", "GENERATING", "READY", "FAILED"]
 JobStatus = Literal["queued", "running", "done", "failed"]
+MomentMediaMode = Literal["photos", "videos", "both"]
+MomentMediaType = Literal["photo", "video"]
+
+
+class GenerationCapabilitiesResponse(BaseModel):
+    mode: MomentMediaMode = "photos"
+    available_media: list[MomentMediaType] = Field(default_factory=lambda: ["photo"])
 
 
 class ContentPlanCreate(BaseModel):
@@ -181,6 +188,7 @@ class ContentPlanResponse(BaseModel):
     created_at: str
     updated_at: str
     blocks: list[PlanBlockResponse] | None = None
+    generation_capabilities: GenerationCapabilitiesResponse | None = None
 
 
 # ── Plan Block ───────────────────────────────────────────
@@ -232,6 +240,7 @@ class MomentResponse(BaseModel):
     created_at: str
     updated_at: str
     context: MomentContextResponse | None = None
+    generation_capabilities: GenerationCapabilitiesResponse | None = None
 
 
 # ── Moment Context ───────────────────────────────────────

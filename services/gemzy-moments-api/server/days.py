@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 
 from .auth import require_user
+from .moment_media import attach_generation_capabilities
 from .moments_schemas import (
     ContentPlanCreate,
     ContentPlanResponse,
@@ -47,7 +48,7 @@ async def create_plan(body: ContentPlanCreate, user=Depends(require_user)):
         "status": "DRAFT",
     }
     result = _db().schema(SCHEMA).table("content_plans").insert(row).execute()
-    return result.data[0]
+    return attach_generation_capabilities(result.data[0])
 
 
 @router.get("", response_model=list[ContentPlanResponse])
@@ -65,7 +66,7 @@ async def list_plans(
     if persona_id:
         q = q.eq("persona_id", persona_id)
     result = q.order("date_start", desc=True).execute()
-    return result.data
+    return [attach_generation_capabilities(plan) for plan in (result.data or [])]
 
 
 @router.get("/{plan_id}", response_model=ContentPlanResponse)
@@ -104,11 +105,11 @@ async def get_plan(plan_id: str, user=Depends(require_user)):
             .order("created_at")
             .execute()
         ).data or []
-        block["moments"] = block_moments
+        block["moments"] = [attach_generation_capabilities(moment) for moment in block_moments]
 
     data = plan.data
     data["blocks"] = blocks
-    return data
+    return attach_generation_capabilities(data)
 
 
 @router.put("/{plan_id}", response_model=ContentPlanResponse)
@@ -130,7 +131,7 @@ async def update_plan(
     )
     if not result.data:
         raise HTTPException(404, "Plan not found")
-    return result.data[0]
+    return attach_generation_capabilities(result.data[0])
 
 
 @router.delete("/{plan_id}", status_code=204)

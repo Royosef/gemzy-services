@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 
 from .auth import require_user
+from .moment_media import attach_generation_capabilities
 from .moments_schemas import (
     GenerationJobResponse,
     MomentContextResponse,
@@ -85,7 +86,7 @@ async def create_moment(
         "status": "PLANNED",
     }
     result = _db().schema(SCHEMA).table("moments").insert(row).execute()
-    return result.data[0]
+    return attach_generation_capabilities(result.data[0])
 
 
 @router.get("/by-plan/{plan_id}", response_model=list[MomentResponse])
@@ -100,7 +101,7 @@ async def list_moments_for_plan(plan_id: str, user=Depends(require_user)):
         .order("created_at")
         .execute()
     )
-    return result.data
+    return [attach_generation_capabilities(moment) for moment in (result.data or [])]
 
 
 @router.get("/{moment_id}", response_model=MomentResponse)
@@ -120,7 +121,7 @@ async def get_moment(moment_id: str, user=Depends(require_user)):
         .execute()
     )
     data["context"] = ctx.data
-    return data
+    return attach_generation_capabilities(data)
 
 
 @router.put("/{moment_id}", response_model=MomentResponse)
@@ -142,7 +143,7 @@ async def update_moment(
     )
     if not result.data:
         raise HTTPException(404, "Moment not found")
-    return result.data[0]
+    return attach_generation_capabilities(result.data[0])
 
 
 @router.delete("/{moment_id}", status_code=204)
