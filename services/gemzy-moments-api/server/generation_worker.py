@@ -127,29 +127,30 @@ def _build_prompt_from_context(
     # Moment type
     moment_type = moment.get("moment_type", "STORY")
     if moment_type == "POST":
-        parts.append("Format: Instagram feed post (square, high quality)")
+        parts.append("Format: square 1:1 image, high quality")
         parts.append(
-            "Composition: render the image as a polished Instagram feed post screenshot, "
-            "with subtle in-app UI chrome around the photo such as a clean profile header, "
-            "feed framing, and understated social controls."
+            "Composition: create a polished square image with a clean, finished editorial feel. "
+            "The delivered image must be the raw final creative asset itself, not a screenshot, not an app capture, and not a mocked interface."
         )
         parts.append(
-            "UI guidance: preserve the generated photo as the hero image, keep interface "
-            "details elegant and minimal, use simple believable icons, and avoid dense or "
-            "gibberish text."
+            "Critical restriction: do not render any platform UI or interface chrome. "
+            "Do not show profile names, top bars, progress lines, close icons, send-message boxes, reply fields, heart/share icons, buttons, captions, timestamps, phone frames, or watermarks."
         )
     else:
-        parts.append("Format: Instagram story (vertical 9:16)")
+        parts.append("Format: vertical 9:16 image, high quality")
         parts.append(
-            "Composition: render the image as a premium Instagram Story screen capture, "
-            "with recognizable story UI like a slim top progress bar, a profile/header row, "
-            "and subtle reply or action affordances near the bottom."
+            "Composition: create a premium vertical full-frame image with an immersive editorial feel. "
+            "The delivered image must be the raw final creative asset itself, not a screenshot, not an app capture, and not a mocked interface."
         )
         parts.append(
-            "UI guidance: keep the scene full-bleed and immersive, reserve safe margins for "
-            "story chrome, make the interface refined and believable, and avoid heavy text "
-            "blocks or garbled lettering."
+            "Critical restriction: keep the scene full-bleed and immersive, reserve comfortable safe margins for future overlays if needed, "
+            "but do not render any visible platform UI. "
+            "Specifically forbid progress bars, profile rows, visible names, close icons, ellipsis menus, send-message inputs, reply boxes, reaction icons, stickers, captions, or any other interface overlay."
         )
+    parts.append(
+        "Final requirement: output only the photographic or designed asset. "
+        "No visible app UI, no interface chrome, no overlaid interface text."
+    )
 
     # Location context
     if context and location:

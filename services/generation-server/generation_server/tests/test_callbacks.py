@@ -18,7 +18,6 @@ from generation_server.settings import Settings
 def _settings() -> Settings:
     return Settings(
         shared_secret=None,
-        app_callback_base="https://app.example",
         provider="google_gemini",
         model_service_url=None,
         gcs_bucket=None,

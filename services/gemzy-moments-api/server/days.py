@@ -65,7 +65,7 @@ async def list_plans(
     )
     if persona_id:
         q = q.eq("persona_id", persona_id)
-    result = q.order("date_start", desc=True).execute()
+    result = q.order("date_start", desc=True).order("updated_at", desc=True).execute()
     return [attach_generation_capabilities(plan) for plan in (result.data or [])]
 
 

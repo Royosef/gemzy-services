@@ -24,6 +24,7 @@ from . import (
     dashboard_fx,
     dashboard_funnel,
     dashboard_meta,
+    dashboard_personas,
     dashboard_revenue,
     dashboard_social,
     dashboard_social_sources,
@@ -68,6 +69,24 @@ def _resolve_deletion_poll_interval(default: float = 3600.0) -> float | None:
     return interval if interval > 0 else None
 
 
+def _resolve_persona_automation_poll_interval(default: float = 300.0) -> float | None:
+    """Return the persona automation worker interval or ``None`` if disabled."""
+
+    raw = os.getenv("PERSONA_AUTOMATION_POLL_SECONDS")
+    if raw is None:
+        return default
+    try:
+        interval = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid PERSONA_AUTOMATION_POLL_SECONDS=%r; using default %.0fs",
+            raw,
+            default,
+        )
+        return default
+    return interval if interval > 0 else None
+
+
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .rate_limit import limiter
@@ -98,6 +117,7 @@ app.include_router(notifications.router)
 app.include_router(prompt_engines.router)
 app.include_router(dashboard_meta.router)
 app.include_router(dashboard_coach.router)
+app.include_router(dashboard_personas.router)
 app.include_router(dashboard_social.router)
 app.include_router(dashboard_social_sources.router)
 app.include_router(dashboard_fx.router)
@@ -145,6 +165,7 @@ async def start_deletion_worker() -> None:
     )
 
 _credit_reset_worker_task: asyncio.Task | None = None
+_persona_automation_worker_task: asyncio.Task | None = None
 
 @app.on_event("startup")
 async def start_credit_reset_worker() -> None:
@@ -173,6 +194,36 @@ async def start_credit_reset_worker() -> None:
     )
 
 
+@app.on_event("startup")
+async def start_persona_automation_worker() -> None:
+    """Launch a background task that runs due persona automation jobs."""
+
+    global _persona_automation_worker_task
+    interval = _resolve_persona_automation_poll_interval()
+    if interval is None:
+        logger.info("Persona automation worker disabled; set PERSONA_AUTOMATION_POLL_SECONDS > 0")
+        return
+
+    async def worker() -> None:
+        while True:
+            try:
+                processed = await dashboard_personas.process_due_persona_automation_runs()
+                if processed:
+                    logger.info("Processed %s due persona automation run(s)", processed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to process due persona automation runs")
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+
+    _persona_automation_worker_task = asyncio.create_task(
+        worker(), name="persona-automation-worker"
+    )
+
+
 @app.on_event("shutdown")
 async def stop_deletion_worker() -> None:
     """Cancel the background deletion worker when the app stops."""
@@ -189,11 +240,20 @@ async def stop_deletion_worker() -> None:
         
     global _credit_reset_worker_task
     if not _credit_reset_worker_task:
+        pass
+    else:
+        _credit_reset_worker_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _credit_reset_worker_task
+        _credit_reset_worker_task = None
+
+    global _persona_automation_worker_task
+    if not _persona_automation_worker_task:
         return
-    _credit_reset_worker_task.cancel()
+    _persona_automation_worker_task.cancel()
     with suppress(asyncio.CancelledError):
-        await _credit_reset_worker_task
-    _credit_reset_worker_task = None
+        await _persona_automation_worker_task
+    _persona_automation_worker_task = None
 
 
 from fastapi import FastAPI, Request, Response, status

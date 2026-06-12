@@ -9,8 +9,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("GENERATION_APP_URL", "https://app.example")
-
 from generation_server import tasks
 from generation_server.models import (
     GenerationDimensions,
@@ -27,7 +25,6 @@ from generation_server.settings import Settings
 def _settings() -> Settings:
     return Settings(
         shared_secret=None,
-        app_callback_base="https://app.example",
         provider="google_gemini",
         model_service_url=None,
         gcs_bucket=None,

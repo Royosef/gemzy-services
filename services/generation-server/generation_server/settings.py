@@ -27,7 +27,6 @@ class Settings:
     """Runtime configuration derived from environment variables."""
 
     shared_secret: Optional[str]
-    app_callback_base: str
     provider: Literal["comfyui", "google_gemini"]
     model_service_url: Optional[str]
     gcs_bucket: Optional[str]
@@ -53,9 +52,6 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         shared_secret = os.getenv("GENERATION_SHARED_SECRET")
-        app_callback_base = os.getenv("GENERATION_APP_URL", "").strip()
-        if not app_callback_base:
-            raise RuntimeError("GENERATION_APP_URL must be configured")
 
         raw_credentials = os.getenv("GCS_CREDENTIALS")
         gcs_credentials: Optional[Dict[str, Any]] = None
@@ -95,7 +91,6 @@ class Settings:
 
         return cls(
             shared_secret=shared_secret,
-            app_callback_base=app_callback_base.rstrip("/"),
             provider=provider,
             model_service_url=os.getenv("GENERATION_MODEL_SERVICE_URL"),
             gcs_bucket=os.getenv("GENERATION_MODEL_BUCKET"),

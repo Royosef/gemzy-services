@@ -1,4 +1,3 @@
-import os
 import sys
 import copy
 from pathlib import Path
@@ -7,8 +6,6 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-os.environ.setdefault("GENERATION_APP_URL", "https://app.example")
 
 from prompting import (  # noqa: E402
     PROMPT_TASK_ON_MODEL,

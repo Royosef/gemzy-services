@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,8 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-os.environ.setdefault("GENERATION_APP_URL", "https://example.test")
-
 from generation_server import google_runner
 from generation_server.google_runner import GoogleGeminiError, GoogleGeminiRunner
 

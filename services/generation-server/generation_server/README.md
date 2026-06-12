@@ -8,7 +8,6 @@ and incremental result delivery.
 ## Running locally
 
 1. Configure the required environment variables in `../.env`:
-   - `GENERATION_APP_URL`: Public base URL of the calling application server.
    - `GENERATION_SHARED_SECRET`: Shared secret used to authenticate requests
      between the API and generation server.
    - `GENERATION_MODEL_SERVICE_URL`: Optional. Used to fetch model metadata
