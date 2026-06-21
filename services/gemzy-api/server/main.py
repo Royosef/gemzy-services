@@ -30,6 +30,7 @@ from . import (
     dashboard_social_sources,
     dashboard_webhooks,
     generations,
+    looks,
     notifications,
     payments,
     plans_router,
@@ -112,6 +113,7 @@ app.include_router(content.collections_router)
 app.include_router(content.models_router)
 # Generation endpoints
 app.include_router(generations.router)
+app.include_router(looks.router)
 app.include_router(payments.router)
 app.include_router(notifications.router)
 app.include_router(prompt_engines.router)

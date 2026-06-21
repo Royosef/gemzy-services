@@ -784,8 +784,12 @@ def _planner_enrich_definition() -> dict[str, Any]:
         "default_model": "gemini-2.5-flash",
         "temperature": 0.7,
         "system_instruction": (
-            "You are an expert social media manager and creative director for an influencer."
-            "You craft realistic, engaging day plans for their content feed. You output strict JSON matching the requested schema."
+            "You are the Reasoner for Gemzy Moments. "
+            "You think like a content director for an Instagram-native lifestyle creator, not a generic assistant. "
+            "Produce believable, convention-following daily content plans with strong continuity across camera perspective, outfit arcs, time-of-day light, and posting taste. "
+            "You favor Story-heavy plans, reserve only 1-3 hero feed-worthy moments, and choose camera types based on familiar social-media grammar rather than creative novelty. "
+            "Use the response schema as real reasoning space: think through activities, arcs, outfit persistence, camera perspective, and format distribution before committing to the final moments array. "
+            "Output strict JSON matching the requested schema."
         ),
         "prompt_lines": [
             "Prompt from User: {prompt}",
@@ -793,15 +797,25 @@ def _planner_enrich_definition() -> dict[str, Any]:
             "Persona Bio: {persona_bio}",
             "Realism Level: {style_profile_realism_level}",
             "Style Tags: {style_tags_csv}",
+            "Negative Style Rules: {style_profile_negative_rules_csv}",
             "Total target stories: {preferences_stories_per_day}",
             "Total target posts: {preferences_posts_per_day}",
-            "Available Locations: {world_summary_location_tags_csv}",
+            "Available Location Tags: {world_summary_location_tags_csv}",
             "Available Wardrobe Tags: {world_summary_wardrobe_tags_csv}",
             "",
-            "Based on the user's prompt, create a cohesive content plan for the day.",
-            "Include an overarching intent, tone, and a day_arc summary.",
-            "Break the plan down into individual moments (e.g., morning, midday, afternoon, evening, late_night).",
-            "For each moment, give a detailed description of the photo/video, appropriate mood_tags, and desired location and outfit tags from the available lists.",
+            "Available Locations Detail:",
+            "{world_summary_locations_text}",
+            "",
+            "Available Wardrobe Detail:",
+            "{world_summary_wardrobe_items_text}",
+            "",
+            "Build a believable, posting-realistic content plan for this day.",
+            "Use Morning, Midday, Afternoon, Evening, and Late Night as the time-of-day vocabulary when relevant.",
+            "Default to outfit persistence inside the same arc unless the day naturally shifts register.",
+            "Choose camera type and format based on familiar Instagram conventions for the activity.",
+            "Prefer Stories as the daily heartbeat and reserve Posts for hero scenes.",
+            "For each moment, provide the existing planning fields plus these additive fields: camera_type, scene, light, camera_perspective, moment_reasoning, and arc_id when useful.",
+            "camera_perspective must be explicit and practical for selfie / mirror / POV moments.",
         ],
     }
 
@@ -812,9 +826,10 @@ def _planner_rank_definition() -> dict[str, Any]:
         "default_model": "gemini-2.5-flash",
         "temperature": 0.3,
         "system_instruction": (
-            "You are a social media feed curator."
-            "Given a list of planned content moments for the day, score each moment's potential to be a 'hero' post (hero_score from 0.0 to 1.0)."
-            "Then, suggest whether it should be a 'STORY' (ephemeral, candid) or a 'POST' (high-quality, feed-worthy)."
+            "You are a social media feed curator for Gemzy Moments. "
+            "Rank each planned moment using Instagram-native taste, continuity strength, visual distinctiveness, and likely renderability. "
+            "You should not rank purely for prettiness; prefer moments that feel conventionally real for the activity and that work well within the day's continuity arc. "
+            "Then suggest whether each should be a STORY or a POST while keeping the day Story-heavy overall. "
             "Output strict JSON matching the requested schema."
         ),
         "prompt_lines": [
@@ -825,11 +840,14 @@ def _planner_rank_definition() -> dict[str, Any]:
             "Moments:",
             "{moments_text}",
             "",
-            "Please analyze the moments above. For each moment (using its 0-based index), provide:",
+            "Analyze each moment for hero-post potential, Instagram convention fit, continuity strength, and renderability.",
+            "For each moment (using its 0-based index), provide:",
             "1. The index number.",
             "2. format: either STORY or POST.",
             "3. hero_score: 0.0 to 1.0 rating its feed-worthiness.",
             "4. reasoning: a brief explanation.",
+            "5. format_reasoning: why the chosen format fits the activity and platform convention.",
+            "6. continuity_score: 0.0 to 1.0 rating how well this moment supports the day's continuity.",
         ],
     }
 

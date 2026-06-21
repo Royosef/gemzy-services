@@ -45,6 +45,15 @@ def _get_shared_secret() -> str:
     return os.getenv("GENERATION_SHARED_SECRET", "").strip()
 
 
+def _planner_http_timeout() -> httpx.Timeout:
+    raw = os.getenv("GENERATION_PLANNER_TIMEOUT_SECONDS", "60").strip()
+    try:
+        total = max(5.0, float(raw))
+    except ValueError:
+        total = 60.0
+    return httpx.Timeout(total, connect=min(total, 10.0))
+
+
 async def _call_ai_enrich(
     prompt: str,
     persona: dict,
@@ -81,6 +90,7 @@ async def _call_ai_enrich(
             "realism_level": style.get("realism_level", "high"),
             "camera_style_tags": style.get("camera_style_tags", []),
             "color_palette_tags": style.get("color_palette_tags", []),
+            "negative_rules": style.get("negative_rules", []),
         },
         "preferences": {
             "stories_per_day": prefs.get("default_stories_per_day", 3),
@@ -90,6 +100,32 @@ async def _call_ai_enrich(
             "location_tags": list(loc_tags),
             "wardrobe_tags": list(wardrobe_tags),
             "location_tiers": loc_tiers,
+            "locations": [
+                {
+                    "name": loc.get("name", ""),
+                    "tags": [str(tag) for tag in loc.get("tags", [])],
+                    "tier": loc.get("tier", "SEMI_STABLE"),
+                    "description": loc.get("description"),
+                    "visual_notes": loc.get("visual_notes"),
+                    "lighting_notes": loc.get("lighting_notes"),
+                    "emotional_association": loc.get("emotional_association"),
+                }
+                for loc in locations
+            ],
+            "wardrobe_items": [
+                {
+                    "name": item.get("name", ""),
+                    "category": item.get("category", ""),
+                    "tags": [str(tag) for tag in item.get("tags", [])],
+                    "tier": item.get("tier", "SEMI_STABLE"),
+                    "description": item.get("description"),
+                    "season_tags": [str(tag) for tag in item.get("season_tags", [])],
+                    "suitability_tags": [str(tag) for tag in item.get("suitability_tags", [])],
+                    "signature_item": bool(item.get("signature_item", False)),
+                    "favorite_item": bool(item.get("favorite_item", False)),
+                }
+                for item in wardrobe
+            ],
         },
     }
 
@@ -99,7 +135,7 @@ async def _call_ai_enrich(
         headers["X-Generation-Secret"] = secret
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=_planner_http_timeout()) as client:
             resp = await client.post(
                 f"{base_url.rstrip('/')}/planner/enrich",
                 json=payload, headers=headers,
@@ -108,6 +144,12 @@ async def _call_ai_enrich(
             logger.warning("AI enrichment returned %d: %s", resp.status_code, resp.text[:200])
             return None
         return resp.json()
+    except httpx.TimeoutException:
+        logger.warning(
+            "AI enrichment timed out while calling %s/planner/enrich",
+            base_url.rstrip("/"),
+        )
+        return None
     except Exception:
         logger.exception(
             "AI enrichment call failed while calling %s/planner/enrich",
@@ -140,7 +182,7 @@ async def _call_ai_rank(
         headers["X-Generation-Secret"] = secret
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=_planner_http_timeout()) as client:
             resp = await client.post(
                 f"{base_url.rstrip('/')}/planner/rank",
                 json=payload, headers=headers,
@@ -149,6 +191,12 @@ async def _call_ai_rank(
             logger.warning("AI ranking returned %d: %s", resp.status_code, resp.text[:200])
             return None
         return resp.json()
+    except httpx.TimeoutException:
+        logger.warning(
+            "AI ranking timed out while calling %s/planner/rank",
+            base_url.rstrip("/"),
+        )
+        return None
     except Exception:
         logger.exception(
             "AI ranking call failed while calling %s/planner/rank",
@@ -308,6 +356,12 @@ async def plan(plan_id: str, user=Depends(get_current_user)):
             "description": em.get("description", ""),
             "time_slot": em.get("time_slot", "morning"),
             "priority": em.get("priority", "medium"),
+            "camera_type": em.get("camera_type"),
+            "scene": em.get("scene"),
+            "light": em.get("light"),
+            "camera_perspective": em.get("camera_perspective"),
+            "moment_reasoning": em.get("moment_reasoning"),
+            "arc_id": em.get("arc_id"),
             "loc_id": loc_id,
             "loc_name": loc.get("name") if loc else None,
             "loc_tags": [str(t) for t in loc.get("tags", [])] if loc else [],
@@ -333,6 +387,10 @@ async def plan(plan_id: str, user=Depends(get_current_user)):
             "location_name": rm.get("loc_name"),
             "location_tags": rm.get("loc_tags", []),
             "outfit_items": rm["outfit"].item_names,
+            "camera_type": rm.get("camera_type"),
+            "scene": rm.get("scene"),
+            "light": rm.get("light"),
+            "continuity_notes": rm.get("continuity_notes"),
         }
         for rm in resolved_moments
     ]
@@ -419,7 +477,17 @@ async def plan(plan_id: str, user=Depends(get_current_user)):
             ctx = MomentContextUpsert(
                 location_id=rm["loc_id"],
                 wardrobe_item_ids=rm["wardrobe_ids"],
-                outfit_composition=rm["outfit_composition"],
+                outfit_composition={
+                    **rm["outfit_composition"],
+                    "planner_prompt_spec": {
+                        "camera_type": rm.get("camera_type"),
+                        "scene": rm.get("scene"),
+                        "light": rm.get("light"),
+                        "camera_perspective": rm.get("camera_perspective"),
+                        "moment_reasoning": rm.get("moment_reasoning"),
+                        "arc_id": rm.get("arc_id"),
+                    },
+                },
                 mood_tags=rm["mood_tags"],
                 continuity_notes=rm.get("continuity_notes"),
             )
@@ -438,7 +506,17 @@ async def plan(plan_id: str, user=Depends(get_current_user)):
                 "context": {
                     "location_id": rm["loc_id"],
                     "wardrobe_item_ids": rm["wardrobe_ids"],
-                    "outfit_composition": rm["outfit_composition"],
+                    "outfit_composition": {
+                        **rm["outfit_composition"],
+                        "planner_prompt_spec": {
+                            "camera_type": rm.get("camera_type"),
+                            "scene": rm.get("scene"),
+                            "light": rm.get("light"),
+                            "camera_perspective": rm.get("camera_perspective"),
+                            "moment_reasoning": rm.get("moment_reasoning"),
+                            "arc_id": rm.get("arc_id"),
+                        },
+                    },
                     "mood_tags": rm["mood_tags"],
                     "continuity_notes": rm.get("continuity_notes"),
                 },

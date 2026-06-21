@@ -344,6 +344,61 @@ def _finalize_image_prompts(
     }
 
 
+def _planner_locations_text(locations: list[dict[str, Any]] | None) -> str:
+    if not locations:
+        return "None"
+
+    lines: list[str] = []
+    for loc in locations:
+        parts = [
+            f"- {loc.get('name') or 'Unnamed location'}",
+            f"tier={loc.get('tier') or 'SEMI_STABLE'}",
+        ]
+        tags = ", ".join(str(tag) for tag in (loc.get("tags") or []) if str(tag).strip())
+        if tags:
+            parts.append(f"tags={tags}")
+        if loc.get("description"):
+            parts.append(f"description={loc.get('description')}")
+        if loc.get("visual_notes"):
+            parts.append(f"visual_notes={loc.get('visual_notes')}")
+        if loc.get("lighting_notes"):
+            parts.append(f"lighting_notes={loc.get('lighting_notes')}")
+        if loc.get("emotional_association"):
+            parts.append(f"emotion={loc.get('emotional_association')}")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
+
+
+def _planner_wardrobe_text(items: list[dict[str, Any]] | None) -> str:
+    if not items:
+        return "None"
+
+    lines: list[str] = []
+    for item in items:
+        parts = [
+            f"- {item.get('name') or 'Unnamed item'}",
+            f"category={item.get('category') or 'unknown'}",
+            f"tier={item.get('tier') or 'SEMI_STABLE'}",
+        ]
+        tags = ", ".join(str(tag) for tag in (item.get("tags") or []) if str(tag).strip())
+        if tags:
+            parts.append(f"tags={tags}")
+        if item.get("description"):
+            parts.append(f"description={item.get('description')}")
+        season_tags = ", ".join(str(tag) for tag in (item.get("season_tags") or []) if str(tag).strip())
+        if season_tags:
+            parts.append(f"season_tags={season_tags}")
+        suitability_tags = ", ".join(str(tag) for tag in (item.get("suitability_tags") or []) if str(tag).strip())
+        if suitability_tags:
+            parts.append(f"suitability_tags={suitability_tags}")
+        if item.get("signature_item"):
+            parts.append("signature_item=true")
+        if item.get("favorite_item"):
+            parts.append("favorite_item=true")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
+
+
 def _render_image_defaults(definition: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "negative_prompt": compose_negative_prompt(
@@ -736,10 +791,13 @@ def _render_planner_enrich(definition: dict[str, Any], payload: dict[str, Any]) 
         "persona_bio": persona.get("bio") or "None",
         "style_profile_realism_level": style_profile.get("realism_level") or "high",
         "style_tags_csv": ", ".join(style_tags),
+        "style_profile_negative_rules_csv": ", ".join(style_profile.get("negative_rules") or []) or "None",
         "preferences_stories_per_day": preferences.get("stories_per_day") or 0,
         "preferences_posts_per_day": preferences.get("posts_per_day") or 0,
         "world_summary_location_tags_csv": ", ".join(world_summary.get("location_tags") or []),
         "world_summary_wardrobe_tags_csv": ", ".join(world_summary.get("wardrobe_tags") or []),
+        "world_summary_locations_text": _planner_locations_text(world_summary.get("locations") or []),
+        "world_summary_wardrobe_items_text": _planner_wardrobe_text(world_summary.get("wardrobe_items") or []),
     }
     prompt_lines = [str(line).format(**context) for line in definition.get("prompt_lines", [])]
     model_name = os.getenv(
@@ -766,6 +824,10 @@ def _render_planner_rank(definition: dict[str, Any], payload: dict[str, Any]) ->
                     f"  Priority: {moment.get('priority', '')}",
                     f"  Location: {moment.get('location_name') or 'Unknown'} ({', '.join(moment.get('location_tags') or [])})",
                     f"  Outfit Items: {', '.join(moment.get('outfit_items') or [])}",
+                    f"  Camera Type: {moment.get('camera_type') or 'Unknown'}",
+                    f"  Scene: {moment.get('scene') or 'Unknown'}",
+                    f"  Light: {moment.get('light') or 'Unknown'}",
+                    f"  Continuity Notes: {moment.get('continuity_notes') or 'None'}",
                 ]
             )
         )

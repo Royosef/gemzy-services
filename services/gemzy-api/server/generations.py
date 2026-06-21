@@ -1196,6 +1196,18 @@ def _build_image_edit_generation_payload(
     )
 
 
+def _resolve_generation_target_collection_id(
+    payload: CreateGenerationPayload,
+    user: UserState,
+) -> str | None:
+    collection_id = (payload.collectionId or "").strip()
+    if not collection_id:
+        return None
+
+    _ensure_collections_belong(user.id, [collection_id])
+    return collection_id
+
+
 def _resolve_image_edit_target_collection_id(
     payload: CreateImageEditPayload,
     user: UserState,
@@ -1454,6 +1466,7 @@ async def create_generation(
         payload.style, _generation_task_type(payload)
     )
     payload = payload.model_copy(update={"style": generation_style})
+    target_collection_id = _resolve_generation_target_collection_id(payload, user)
 
     callback_url = _build_callback_url(job_id)
     target_url = _resolve_generation_url(payload.generationServerUrl)
@@ -1476,6 +1489,7 @@ async def create_generation(
         aspect=payload.aspect,
         dims=_dims_payload(payload.dims),
         quality=payload.quality,
+        unsaved_collection_id=target_collection_id,
     )
 
     try:

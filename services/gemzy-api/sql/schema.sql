@@ -337,6 +337,23 @@ CREATE INDEX IF NOT EXISTS push_tokens_user_id_idx
 CREATE INDEX IF NOT EXISTS push_tokens_is_active_idx
   ON push_tokens (is_active);
 
+CREATE TABLE IF NOT EXISTS saved_looks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  surface TEXT NOT NULL DEFAULT 'on-model',
+  engine_id TEXT,
+  style JSONB NOT NULL DEFAULT '{}'::jsonb,
+  preview_url TEXT,
+  preview_storage_path TEXT,
+  required_plan plan_tier DEFAULT 'Pro',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS saved_looks_user_surface_updated_idx
+  ON saved_looks (user_id, surface, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS push_notification_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   notification_id UUID REFERENCES app_notifications(id) ON DELETE SET NULL,
@@ -393,6 +410,18 @@ BEGIN
   ) THEN
     CREATE TRIGGER profiles_set_updated_at
       BEFORE UPDATE ON profiles
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'saved_looks_set_updated_at'
+  ) THEN
+    CREATE TRIGGER saved_looks_set_updated_at
+      BEFORE UPDATE ON saved_looks
       FOR EACH ROW
       EXECUTE FUNCTION set_updated_at();
   END IF;

@@ -1,5 +1,6 @@
 import sys
 import copy
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -63,9 +64,10 @@ def test_resolve_prompt_task_builds_planner_enrich_prompt_bundle() -> None:
     )
 
     assert rendered["model_name"] == os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.5-flash")
-    assert "expert social media manager" in rendered["system_instruction"]
+    assert "Reasoner for Gemzy Moments" in rendered["system_instruction"]
     assert "Persona Name: Maya" in rendered["user_prompt"]
-    assert "Available Locations: studio, cafe" in rendered["user_prompt"]
+    assert "Available Location Tags: studio, cafe" in rendered["user_prompt"]
+    assert "Available Locations Detail:" in rendered["user_prompt"]
 
 
 def test_resolve_prompt_task_supports_task_first_on_model_registry() -> None:

@@ -124,6 +124,42 @@ class UserState(BaseModel):
     editModeTrialEditsRemaining: int = Field(default=2, ge=0, le=2)
 
 
+class SavedLook(BaseModel):
+    id: str
+    name: str
+    surface: Literal["on-model"] = "on-model"
+    engineId: str | None = None
+    style: dict[str, str] = Field(default_factory=dict)
+    previewUri: str | None = None
+    previewStoragePath: str | None = None
+    requiredPlan: Literal["Free", "Starter", "Pro", "Designer"] | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+
+
+class CreateSavedLookPayload(BaseModel):
+    name: str
+    surface: Literal["on-model"] = "on-model"
+    engineId: str | None = None
+    style: dict[str, str]
+    previewUri: str | None = None
+    previewStoragePath: str | None = None
+    requiredPlan: Literal["Free", "Starter", "Pro", "Designer"] | None = None
+
+
+class UpdateSavedLookPayload(BaseModel):
+    name: str | None = None
+    engineId: str | None = None
+    style: dict[str, str] | None = None
+    previewUri: str | None = None
+    previewStoragePath: str | None = None
+    requiredPlan: Literal["Free", "Starter", "Pro", "Designer"] | None = None
+
+
+class DeleteSavedLookResponse(BaseModel):
+    ok: bool = True
+
+
 class StyleTrialState(BaseModel):
     pendingSelectionKeys: list[str] = Field(default_factory=list)
     remainingUses: int = Field(default=3, ge=0, le=3)
@@ -381,6 +417,7 @@ class CreateGenerationPayload(BaseModel):
     quality: GenerationQuality
     plan: str
     creditsNeeded: int
+    collectionId: str | None = None
     promptOverrides: list[str] = Field(default_factory=list)
 
 

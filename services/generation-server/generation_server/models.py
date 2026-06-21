@@ -127,6 +127,7 @@ class PlannerStyleProfile(BaseModel):
     realism_level: str = "high"
     camera_style_tags: list[str] = Field(default_factory=list)
     color_palette_tags: list[str] = Field(default_factory=list)
+    negative_rules: list[str] = Field(default_factory=list)
 
 class PlannerPreferences(BaseModel):
     stories_per_day: int = 3
@@ -136,6 +137,8 @@ class PlannerWorldSummary(BaseModel):
     location_tags: list[str] = Field(default_factory=list)
     wardrobe_tags: list[str] = Field(default_factory=list)
     location_tiers: dict[str, str] = Field(default_factory=dict)
+    locations: list[dict[str, Any]] = Field(default_factory=list)
+    wardrobe_items: list[dict[str, Any]] = Field(default_factory=list)
 
 class PlannerEnrichRequest(BaseModel):
     prompt: str
@@ -151,8 +154,22 @@ class PlannerEnrichedMoment(BaseModel):
     desired_location_tags: list[str] = Field(default_factory=list)
     desired_outfit_tags: list[str] = Field(default_factory=list)
     mood_tags: list[str] = Field(default_factory=list)
+    camera_type: str | None = None
+    scene: str | None = None
+    light: str | None = None
+    camera_perspective: str | None = None
+    moment_reasoning: str | None = None
+    arc_id: str | None = None
 
 class PlannerEnrichResponse(BaseModel):
+    activity_extraction_reasoning: str = ""
+    arc_grouping_reasoning: str = ""
+    time_of_day_reasoning: str = ""
+    outfit_planning_reasoning: str = ""
+    format_distribution_reasoning: str = ""
+    camera_type_reasoning: str = ""
+    day_summary: str = ""
+    arcs: list[str] = Field(default_factory=list)
     intent: str
     tone: str
     day_arc: list[str] = Field(default_factory=list)
@@ -166,6 +183,10 @@ class PlannerRankMomentInput(BaseModel):
     location_name: Optional[str] = None
     location_tags: list[str] = Field(default_factory=list)
     outfit_items: list[str] = Field(default_factory=list)
+    camera_type: Optional[str] = None
+    scene: Optional[str] = None
+    light: Optional[str] = None
+    continuity_notes: Optional[str] = None
 
 class PlannerRankRequest(BaseModel):
     persona_name: str
@@ -178,6 +199,8 @@ class PlannerRankedMoment(BaseModel):
     format: Literal["STORY", "POST"]
     hero_score: float
     reasoning: str
+    format_reasoning: str | None = None
+    continuity_score: float | None = None
 
 class PlannerRankResponse(BaseModel):
     rankings: list[PlannerRankedMoment] = Field(default_factory=list)

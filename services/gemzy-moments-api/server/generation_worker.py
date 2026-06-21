@@ -93,6 +93,157 @@ def _disable_reference_assets(exc: Exception) -> None:
 #  PROMPT BUILDER
 # ═══════════════════════════════════════════════════════════
 
+_PHONE_REALISM_BY_CAMERA_TYPE: dict[str, list[str]] = {
+    "front_selfie": [
+        "23mm-equivalent front-camera perspective with slight wide-angle distortion near the lens",
+        "casual handheld framing with tiny tilt and imperfect centering",
+        "iPhone-style color science and realistic phone processing, not glossy editorial polish",
+    ],
+    "mirror_selfie": [
+        "rear-phone-camera mirror capture with realistic handheld tilt",
+        "ambient room light with believable mirror imperfections",
+        "natural phone-camera dynamic range with slight highlight lift and soft shadow detail",
+    ],
+    "pov_holding_object": [
+        "first-person phone snapshot with hands entering from the lower frame edge",
+        "small-sensor focus behavior and believable near-field emphasis",
+        "casual handheld capture rather than a styled product photograph",
+    ],
+    "environment_only": [
+        "quick iPhone environment snapshot with slight off-axis tilt",
+        "phone HDR behavior with natural highlights and mild shadow lift",
+        "grabbed in passing, not composed like a magazine shoot",
+    ],
+    "friend_captured": [
+        "casual friend-shot iPhone framing from conversational distance",
+        "ambient light and candid social snapshot energy",
+        "natural handheld imperfection, not professional portrait polish",
+    ],
+    "default": [
+        "phone-camera realism with natural contrast and handheld imperfection",
+        "real-world smartphone framing rather than editorial composition",
+        "authentic social-media capture, not a stylized AI beauty shot",
+    ],
+}
+
+_IMPERFECTION_BY_CAMERA_TYPE: dict[str, list[str]] = {
+    "front_selfie": [
+        "slightly imperfect framing with the head a touch off-center",
+        "natural skin texture and flyaway hair, no beauty filter",
+    ],
+    "mirror_selfie": [
+        "a few mirror smudges or fingerprints near the edge",
+        "freehand phone tilt of a few degrees, not tripod-straight symmetry",
+    ],
+    "pov_holding_object": [
+        "tiny handheld angle inconsistency",
+        "a natural in-passing feel instead of product-shot precision",
+    ],
+    "environment_only": [
+        "slight accidental tilt and casual composition",
+        "a real snapshot register rather than a curated editorial setup",
+    ],
+    "friend_captured": [
+        "imperfect candid framing with mild breathing-room imbalance",
+        "natural expression and posture instead of a polished influencer pose",
+    ],
+    "default": [
+        "small framing imperfections that keep the image believable",
+        "natural texture and no magazine-perfect polish",
+    ],
+}
+
+_FORBIDDEN_BY_CAMERA_TYPE: dict[str, list[str]] = {
+    "front_selfie": [
+        "third-person observer composition",
+        "a second camera implied outside the selfie device",
+        "the phone fully visible as if someone else photographed the selfie",
+    ],
+    "mirror_selfie": [
+        "two phones anywhere in the image",
+        "observer view of someone standing in front of a mirror",
+        "the phone visible anywhere except the mirror reflection",
+    ],
+    "pov_holding_object": [
+        "face visible in frame",
+        "over-the-shoulder composition",
+        "another person holding the object for the persona",
+    ],
+    "environment_only": [
+        "the persona appearing in frame",
+        "editorial magazine styling",
+        "tripod-perfect symmetry",
+    ],
+    "friend_captured": [
+        "professional portrait framing",
+        "magazine editorial posing",
+        "studio-photographer polish",
+    ],
+    "default": [
+        "editorial perfection",
+        "over-polished beauty-shot styling",
+        "generic AI glamour language",
+    ],
+}
+
+
+def _normalize_camera_type(value: str | None) -> str:
+    raw = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "selfie": "front_selfie",
+        "front_selfie_3_4": "front_selfie",
+        "front_selfie_three_quarter": "front_selfie",
+        "mirror": "mirror_selfie",
+        "mirror_selfie_full_body": "mirror_selfie",
+        "mirror_selfie_torso_only": "mirror_selfie",
+        "pov": "pov_holding_object",
+        "pov_holding": "pov_holding_object",
+        "environment": "environment_only",
+        "friend_capture": "friend_captured",
+    }
+    return aliases.get(raw, raw or "default")
+
+
+def _planner_prompt_spec(context: dict | None) -> dict:
+    if not context:
+        return {}
+    outfit_composition = context.get("outfit_composition") or {}
+    if not isinstance(outfit_composition, dict):
+        return {}
+    spec = outfit_composition.get("planner_prompt_spec") or {}
+    return spec if isinstance(spec, dict) else {}
+
+
+def _camera_opening_line(camera_type: str, camera_perspective: str | None, persona_name: str) -> str:
+    if camera_perspective:
+        return str(camera_perspective)
+    if camera_type == "front_selfie":
+        return f"Smartphone front-camera selfie. The viewer's perspective IS {persona_name}'s phone screen held at arm's length."
+    if camera_type == "mirror_selfie":
+        return f"Mirror selfie captured on {persona_name}'s phone rear camera. The image IS the mirror reflection from that single phone, visible in reflection only."
+    if camera_type == "pov_holding_object":
+        return f"First-person POV. The viewer's eye IS {persona_name}'s eye and the image shows what {persona_name}'s phone captured in that moment."
+    if camera_type == "environment_only":
+        return f"Casual phone snapshot. {persona_name} is not in frame; this is the environment their phone captured in passing."
+    if camera_type == "friend_captured":
+        return f"Casual iPhone photo taken by {persona_name}'s friend from the friend's point of view."
+    return f"Natural smartphone photo of {persona_name} captured as a believable social-media moment."
+
+
+def _format_and_ui_constraints(moment_type: str) -> list[str]:
+    if moment_type == "POST":
+        return [
+            "Aspect Ratio: square 1:1 image intended as a hero Instagram post.",
+            "Composition: polished but still phone-native and believable, not a magazine-perfect editorial.",
+            "Critical UI restriction: do not render any platform UI, captions, buttons, top bars, phone frames, or interface chrome.",
+        ]
+    return [
+        "Aspect Ratio: vertical 9:16 image intended as a Story.",
+        "Composition: immersive and casual, with room for future overlays but no visible interface elements.",
+        "Critical UI restriction: do not render any platform UI, progress bars, names, captions, reply fields, stickers, or interface chrome.",
+    ]
+
+
 def _build_prompt_from_context(
     moment: dict,
     context: dict | None,
@@ -100,108 +251,111 @@ def _build_prompt_from_context(
     location: dict | None,
     wardrobe_items: list[dict] | None,
 ) -> str:
-    """Build a generation prompt from moment + world context.
-
-    Assembles a natural-language prompt that describes:
-      - The persona's identity
-      - The scene location
-      - What they're wearing
-      - The mood/vibe
-      - The caption hint (what's happening)
-    """
-    parts: list[str] = []
-
-    # Persona identity
-    if persona:
-        name = persona.get("display_name", "A person")
-        bio = persona.get("bio")
-        parts.append(f"Subject: {name}")
-        if bio:
-            parts.append(f"Bio: {bio}")
-
-    # Scene caption
-    caption = moment.get("caption_hint")
-    if caption:
-        parts.append(f"Scene: {caption}")
-
-    # Moment type
+    """Build a generation prompt from moment + world context."""
+    prompt_spec = _planner_prompt_spec(context)
     moment_type = moment.get("moment_type", "STORY")
-    if moment_type == "POST":
-        parts.append("Format: square 1:1 image, high quality")
-        parts.append(
-            "Composition: create a polished square image with a clean, finished editorial feel. "
-            "The delivered image must be the raw final creative asset itself, not a screenshot, not an app capture, and not a mocked interface."
-        )
-        parts.append(
-            "Critical restriction: do not render any platform UI or interface chrome. "
-            "Do not show profile names, top bars, progress lines, close icons, send-message boxes, reply fields, heart/share icons, buttons, captions, timestamps, phone frames, or watermarks."
-        )
-    else:
-        parts.append("Format: vertical 9:16 image, high quality")
-        parts.append(
-            "Composition: create a premium vertical full-frame image with an immersive editorial feel. "
-            "The delivered image must be the raw final creative asset itself, not a screenshot, not an app capture, and not a mocked interface."
-        )
-        parts.append(
-            "Critical restriction: keep the scene full-bleed and immersive, reserve comfortable safe margins for future overlays if needed, "
-            "but do not render any visible platform UI. "
-            "Specifically forbid progress bars, profile rows, visible names, close icons, ellipsis menus, send-message inputs, reply boxes, reaction icons, stickers, captions, or any other interface overlay."
-        )
-    parts.append(
-        "Final requirement: output only the photographic or designed asset. "
-        "No visible app UI, no interface chrome, no overlaid interface text."
-    )
+    caption = str(moment.get("caption_hint") or "").strip()
+    persona_name = (persona or {}).get("display_name") or "the persona"
+    camera_type = _normalize_camera_type(prompt_spec.get("camera_type"))
+    scene = str(prompt_spec.get("scene") or caption).strip()
+    light = str(prompt_spec.get("light") or "").strip()
+    moment_reasoning = str(prompt_spec.get("moment_reasoning") or "").strip()
+    arc_id = str(prompt_spec.get("arc_id") or "").strip()
 
-    # Location context
-    if context and location:
-        loc_name = location.get("name", "")
-        loc_tags = location.get("tags", [])
-        if loc_name:
-            parts.append(f"Location: {loc_name}")
+    sections: list[str] = [
+        _camera_opening_line(camera_type, prompt_spec.get("camera_perspective"), persona_name),
+        "\n".join(_format_and_ui_constraints(moment_type)),
+        "Final requirement: output only the photographic or designed asset itself. No visible app UI, interface chrome, or overlaid interface text.",
+    ]
+
+    identity_lines = [f"PERSONA LOCK: {persona_name}."]
+    if persona and persona.get("bio"):
+        identity_lines.append(f"Persona context: {persona.get('bio')}")
+    if arc_id:
+        identity_lines.append(f"Continuity anchor: same day and same arc ({arc_id}) unless the scene clearly indicates a transition.")
+    sections.append("\n".join(identity_lines))
+
+    scene_lines: list[str] = []
+    if scene:
+        scene_lines.append(f"SCENE: {scene}")
+    if location:
+        if location.get("name"):
+            scene_lines.append(f"Location: {location.get('name')}")
+        loc_tags = [str(tag) for tag in (location.get("tags") or []) if str(tag).strip()]
         if loc_tags:
-            parts.append(f"Location style: {', '.join(loc_tags)}")
+            scene_lines.append(f"Location traits: {', '.join(loc_tags)}")
+        if location.get("description"):
+            scene_lines.append(f"Location description: {location.get('description')}")
+        if location.get("visual_notes"):
+            scene_lines.append(f"Location visual notes: {location.get('visual_notes')}")
+        if location.get("lighting_notes"):
+            scene_lines.append(f"Location lighting notes: {location.get('lighting_notes')}")
+    if scene_lines:
+        sections.append("\n".join(scene_lines))
 
-    # Wardrobe context
+    outfit_lines: list[str] = []
     if wardrobe_items:
-        outfit_desc = []
+        outfit_desc: list[str] = []
         for item in wardrobe_items:
             cat = item.get("category", "")
             name = item.get("name", "")
-            tags = item.get("tags", [])
-            desc = f"{name} ({cat})"
+            tags = [str(tag) for tag in (item.get("tags") or []) if str(tag).strip()]
+            desc = f"{name} ({cat})" if cat else name
             if tags:
                 desc += f" [{', '.join(tags)}]"
+            if item.get("description"):
+                desc += f" - {item.get('description')}"
             outfit_desc.append(desc)
         if outfit_desc:
-            parts.append(f"Outfit: {'; '.join(outfit_desc)}")
+            outfit_lines.append(f"OUTFIT BLOCK: {'; '.join(outfit_desc)}")
+            outfit_lines.append("Keep the outfit stable within this arc unless the scene explicitly signals a wardrobe change.")
+    if outfit_lines:
+        sections.append("\n".join(outfit_lines))
 
-    # Mood tags
-    if context:
-        mood_tags = context.get("mood_tags", [])
-        if mood_tags:
-            parts.append(f"Mood: {', '.join(mood_tags)}")
+    light_and_mood: list[str] = []
+    if light:
+        light_and_mood.append(f"LIGHT: {light}")
+    if context and context.get("mood_tags"):
+        light_and_mood.append(f"MOOD: {', '.join(context.get('mood_tags') or [])}")
+    if moment_reasoning:
+        light_and_mood.append(f"Shot intent: {moment_reasoning}")
+    if light_and_mood:
+        sections.append("\n".join(light_and_mood))
 
-        # Continuity notes
-        notes = context.get("continuity_notes")
-        if notes:
-            parts.append(f"Context: {notes}")
+    if context and context.get("continuity_notes"):
+        sections.append(
+            "CONTINUITY: "
+            f"{context.get('continuity_notes')}. Preserve same day, same person, same hair, same makeup, and same outfit whenever the continuity notes imply a continuous arc."
+        )
 
-    # Style profile
-    if persona:
-        style = _fetch_style_profile(persona["id"])
-        if style:
-            parts.append(f"Realism: {style.get('realism_level', 'high')}")
-            cam_tags = style.get("camera_style_tags", [])
-            if cam_tags:
-                parts.append(f"Camera: {', '.join(cam_tags)}")
-            palette = style.get("color_palette_tags", [])
-            if palette:
-                parts.append(f"Colors: {', '.join(palette)}")
-            negatives = style.get("negative_rules", [])
-            if negatives:
-                parts.append(f"Avoid: {', '.join(negatives)}")
+    style = _fetch_style_profile(persona["id"]) if persona else None
+    realism_lines = [
+        "PHONE REALISM: " + "; ".join(_PHONE_REALISM_BY_CAMERA_TYPE.get(camera_type, _PHONE_REALISM_BY_CAMERA_TYPE["default"])),
+        "IMPERFECTIONS: " + "; ".join(_IMPERFECTION_BY_CAMERA_TYPE.get(camera_type, _IMPERFECTION_BY_CAMERA_TYPE["default"])),
+    ]
+    forbidden_phrases = list(_FORBIDDEN_BY_CAMERA_TYPE.get(camera_type, _FORBIDDEN_BY_CAMERA_TYPE["default"]))
+    if style:
+        realism_lines.append(f"Realism level: {style.get('realism_level', 'high')}")
+        cam_tags = [str(tag) for tag in (style.get("camera_style_tags") or []) if str(tag).strip()]
+        if cam_tags:
+            realism_lines.append(f"Style camera tags: {', '.join(cam_tags)}")
+        palette = [str(tag) for tag in (style.get("color_palette_tags") or []) if str(tag).strip()]
+        if palette:
+            realism_lines.append(f"Palette tags: {', '.join(palette)}")
+        forbidden_phrases.extend(str(tag) for tag in (style.get("negative_rules") or []) if str(tag).strip())
+    sections.append("\n".join(realism_lines))
 
-    return "\n".join(parts) if parts else "Generate a social media photo"
+    forbidden_phrases.extend(
+        [
+            "masterpiece",
+            "8k glamour look",
+            "magazine editorial perfection",
+            "beauty-filter skin smoothing",
+        ]
+    )
+    sections.append("FORBIDDEN / NEGATIVE CONSTRAINTS: " + "; ".join(dict.fromkeys(forbidden_phrases)))
+
+    return "\n\n".join(section for section in sections if section) or "Generate a believable social media phone photo"
 
 
 def _fetch_style_profile(persona_id: str) -> dict | None:
