@@ -419,6 +419,7 @@ def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
                 description="Reduce the size slightly",
                 category="jewelry",
                 conflicts_with=["jewelry_bigger"],
+                exclusive_group="jewelry_scale",
                 prompt="Reduce the overall scale of the jewelry by approximately 10% - uniformly across all dimensions, preserving the exact proportions of the original piece. Width, height, and depth must all reduce by the same proportional amount. The jewelry's design, material, color, gemstones, metal tone, surface finish, and position on the body all remain identical to the original. Do not stretch, squash, narrow, or alter any individual dimension independently. The only difference between the new jewelry and the original is uniform scale. If the size reduction exceeds 15%, or if any property of the jewelry changes other than its scale, the image is not ready.",
             ),
             _image_edit_option(
@@ -427,6 +428,7 @@ def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
                 description="Increase the size slightly",
                 category="jewelry",
                 conflicts_with=["jewelry_smaller"],
+                exclusive_group="jewelry_scale",
                 prompt="Increase the overall scale of the jewelry by approximately 10% - uniformly across all dimensions, preserving the exact proportions of the original piece. Width, height, and depth must all increase by the same proportional amount. The jewelry's design, material, color, gemstones, metal tone, surface finish, and position on the body all remain identical to the original. Do not stretch, expand, widen, or alter any individual dimension independently. The only difference between the new jewelry and the original is uniform scale. If the size increase exceeds 15%, or if any property of the jewelry changes other than its scale, the image is not ready.",
             ),
             _image_edit_option(
@@ -435,6 +437,46 @@ def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
                 description="More dimension and glow",
                 category="jewelry",
                 prompt="Enhance the metal and gemstone surfaces of the jewelry - increase specular highlights, deepen reflectivity, and add realistic polish and depth to the material surfaces. The enhancement must look photographically real - no artificial sparkle, no starburst effects, no graphic overlays. The jewelry should look like it was lit more precisely, not digitally altered.",
+            ),
+            _image_edit_option(
+                "material_aluminum",
+                label="Aluminum",
+                description="Change the material of jewelry",
+                category="jewelry",
+                parent_id="jewelry_material",
+                parent_label="Jewelry material",
+                exclusive_group="jewelry_material",
+                prompt="Change the jewelry material to brushed aluminum while preserving the exact design, gemstones, scale, placement, and overall composition.",
+            ),
+            _image_edit_option(
+                "material_gold",
+                label="Gold",
+                description="Change the material of jewelry",
+                category="jewelry",
+                parent_id="jewelry_material",
+                parent_label="Jewelry material",
+                exclusive_group="jewelry_material",
+                prompt="Change the jewelry material to polished gold while preserving the exact design, gemstones, scale, placement, and overall composition.",
+            ),
+            _image_edit_option(
+                "material_silver",
+                label="Silver",
+                description="Change the material of jewelry",
+                category="jewelry",
+                parent_id="jewelry_material",
+                parent_label="Jewelry material",
+                exclusive_group="jewelry_material",
+                prompt="Change the jewelry material to polished silver while preserving the exact design, gemstones, scale, placement, and overall composition.",
+            ),
+            _image_edit_option(
+                "material_bronze",
+                label="Bronze",
+                description="Change the material of jewelry",
+                category="jewelry",
+                parent_id="jewelry_material",
+                parent_label="Jewelry material",
+                exclusive_group="jewelry_material",
+                prompt="Change the jewelry material to bronze while preserving the exact design, gemstones, scale, placement, and overall composition.",
             ),
             _image_edit_option(
                 "zoom_in",
@@ -552,7 +594,7 @@ def _image_edit_definition(*, disable_model_category: bool) -> dict[str, Any]:
             {
                 "id": "jewelry",
                 "label": "Jewelry",
-                "options": ["jewelry_smaller", "jewelry_bigger", "enhance_shine"],
+                "options": ["jewelry_smaller", "jewelry_bigger", "enhance_shine", "jewelry_material"],
             },
             {
                 "id": "framing",
@@ -1448,3 +1490,5 @@ def get_default_registry() -> dict[str, list[dict[str, Any]]]:
             },
         ],
     }
+
+

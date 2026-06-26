@@ -388,7 +388,7 @@ def test_generation_ui_config_exposes_db_managed_edit_catalogs(
                     {
                         "id": "jewelry",
                         "label": "Jewelry",
-                        "options": ["enhance_shine"],
+                        "options": ["enhance_shine", "jewelry_material"],
                     }
                 ],
                 "editOptions": [
@@ -398,6 +398,16 @@ def test_generation_ui_config_exposes_db_managed_edit_catalogs(
                         "description": "More dimension and glow",
                         "category": "jewelry",
                         "prompt": "Enhance the jewelry highlights.",
+                    },
+                    {
+                        "id": "material_gold",
+                        "label": "Gold",
+                        "description": "Change the material of jewelry",
+                        "category": "jewelry",
+                        "parentId": "jewelry_material",
+                        "parentLabel": "Jewelry material",
+                        "exclusiveGroup": "jewelry_material",
+                        "prompt": "Change the jewelry material to polished gold.",
                     }
                 ],
             },
@@ -416,6 +426,8 @@ def test_generation_ui_config_exposes_db_managed_edit_catalogs(
     assert edit_task["engines"][0]["engineId"] == "on-model-edit-default"
     assert edit_task["engines"][0]["editConfig"]["categories"][0]["id"] == "jewelry"
     assert edit_task["engines"][0]["editConfig"]["options"][0]["id"] == "enhance_shine"
+    assert edit_task["engines"][0]["editConfig"]["categories"][0]["options"] == ["enhance_shine", "jewelry_material"]
+    assert any(option["parentId"] == "jewelry_material" for option in edit_task["engines"][0]["editConfig"]["options"])
 
 
 def test_generation_ui_config_derives_on_model_option_labels_from_definition(

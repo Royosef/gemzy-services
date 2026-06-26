@@ -111,6 +111,35 @@ def generate_signed_read_url_v4(blob: storage.Blob, seconds: int = 300) -> str:
         access_token=creds.token,  # <- IAMCredentials used under the hood
     )
 
+
+def generate_signed_upload_url_v4(
+    blob: storage.Blob,
+    *,
+    content_type: str,
+    seconds: int = 300,
+) -> str:
+    creds, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    if not creds.valid or creds.expired or creds.token is None:
+        creds.refresh(Request())
+
+    sa_email = os.getenv("GCS_SIGNING_SERVICE_ACCOUNT") or getattr(
+        creds, "service_account_email", None
+    )
+    if not sa_email:
+        raise RuntimeError(
+            "Set GCS_SIGNING_SERVICE_ACCOUNT or run with a service account identity."
+        )
+
+    return blob.generate_signed_url(
+        version="v4",
+        method="PUT",
+        expiration=timedelta(seconds=max(60, seconds)),
+        content_type=content_type,
+        service_account_email=sa_email,
+        access_token=creds.token,
+    )
+
+
 def maybe_get_bucket(
     bucket_name: str | None, project: str | None = None
 ) -> storage.Bucket | None:
@@ -163,6 +192,7 @@ def user_storage_prefix(user_id: str) -> str:
 
 __all__ = [
     "generate_signed_read_url_v4",
+    "generate_signed_upload_url_v4",
     "build_public_url",
     "get_bucket",
     "get_storage_client",

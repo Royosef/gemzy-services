@@ -109,7 +109,50 @@ IMAGE_EDIT_OPTIONS: dict[str, dict[str, str]] = {
         "category": "jewelry",
         "prompt": "Enhance the metal and gemstone surfaces of the jewelry - increase specular highlights, deepen reflectivity, and add realistic polish and depth to the material surfaces. The enhancement must look photographically real - no artificial sparkle, no starburst effects, no graphic overlays. The jewelry should look like it was lit more precisely, not digitally altered.",
     },
-    "zoom_in": {
+    "material_aluminum": {
+        "label": "Aluminum",
+        "description": "Change the material of jewelry",
+        "parentId": "jewelry_material",
+        "parentLabel": "Jewelry material",
+        "category": "jewelry",
+        "exclusiveGroup": "jewelry_material",
+        "prompt": (
+            "Change the jewelry material to brushed aluminum while preserving the exact design, gemstones, scale, placement, and overall composition."
+        ),
+    },
+    "material_gold": {
+        "label": "Gold",
+        "description": "Change the material of jewelry",
+        "parentId": "jewelry_material",
+        "parentLabel": "Jewelry material",
+        "category": "jewelry",
+        "exclusiveGroup": "jewelry_material",
+        "prompt": (
+            "Change the jewelry material to polished gold while preserving the exact design, gemstones, scale, placement, and overall composition."
+        ),
+    },
+    "material_silver": {
+        "label": "Silver",
+        "description": "Change the material of jewelry",
+        "parentId": "jewelry_material",
+        "parentLabel": "Jewelry material",
+        "category": "jewelry",
+        "exclusiveGroup": "jewelry_material",
+        "prompt": (
+            "Change the jewelry material to polished silver while preserving the exact design, gemstones, scale, placement, and overall composition."
+        ),
+    },
+    "material_bronze": {
+        "label": "Bronze",
+        "description": "Change the material of jewelry",
+        "parentId": "jewelry_material",
+        "parentLabel": "Jewelry material",
+        "category": "jewelry",
+        "exclusiveGroup": "jewelry_material",
+        "prompt": (
+            "Change the jewelry material to bronze while preserving the exact design, gemstones, scale, placement, and overall composition."
+        ),
+    },    "zoom_in": {
         "label": "Zoom in on the jewelry",
         "category": "framing",
         "prompt": "Crop the frame approximately 15% closer toward the jewelry, keeping the jewelry sharp, fully visible, and centered within the new frame. The jewelry must remain completely unobstructed.",
@@ -1233,7 +1276,10 @@ async def create_image_edit(
 
     tier_levels = {"Free": 0, "Starter": 1, "Pro": 2, "Designer": 3}
     user_tier = normalize_plan(user.plan)
-    if tier_levels.get(user_tier, 0) < tier_levels["Pro"]:
+    edit_trial_remaining = _normalize_edit_mode_trial_edits_remaining(
+        user.editModeTrialEditsRemaining
+    )
+    if tier_levels.get(user_tier, 0) < tier_levels["Pro"] and edit_trial_remaining <= 0:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Image editing requires the Pro plan.",
@@ -1249,9 +1295,6 @@ async def create_image_edit(
     target_collection_id = _resolve_image_edit_target_collection_id(payload, user)
 
     edit_trial_applied = False
-    edit_trial_remaining = _normalize_edit_mode_trial_edits_remaining(
-        user.editModeTrialEditsRemaining
-    )
     new_trial_remaining: int | None = None
     new_credits = user.credits
 
@@ -1658,3 +1701,5 @@ async def receive_generation_event(
         )
 
     return CreateGenerationResponse(**to_response(job))
+
+

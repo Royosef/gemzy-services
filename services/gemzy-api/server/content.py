@@ -35,6 +35,7 @@ from .schemas import (
 from .supabase_client import get_client
 from .storage import (
     generate_signed_read_url_v4,
+    generate_signed_upload_url_v4,
     get_bucket,
     maybe_get_bucket,
     user_storage_prefix,
@@ -850,11 +851,10 @@ def _generate_upload_authorization(
 
     expiration = timedelta(seconds=max(60, COLLECTIONS_UPLOAD_TTL))
     try:
-        upload_url = blob.generate_signed_url(
-            version="v4",
-            expiration=expiration,
-            method="PUT",
+        upload_url = generate_signed_upload_url_v4(
+            blob,
             content_type=content_type,
+            seconds=int(expiration.total_seconds()),
         )
     except Exception as exc:
         raise HTTPException(
