@@ -627,6 +627,85 @@ def _normalize_renderable_engine(
     return normalized
 
 
+def _normalize_preset_style(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): str(raw_value)
+        for key, raw_value in value.items()
+        if str(key).strip() and raw_value is not None
+    }
+
+
+def _normalize_preset_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    preset_id = str(row.get("id") or "").strip()
+    name = str(row.get("name") or "").strip()
+    style = _normalize_preset_style(row.get("style"))
+    if not preset_id or not name or not style:
+        return None
+    return {
+        "id": preset_id,
+        "name": name,
+        "style": style,
+        "previewUri": row.get("preview_url"),
+        "previewStoragePath": row.get("preview_storage_path"),
+        "requiredPlan": row.get("required_plan"),
+        "sortOrder": int(row.get("sort_order") or 100),
+        "_taskKey": str(row.get("task_key") or "").strip(),
+        "_engineId": str(row.get("engine_id") or "").strip(),
+    }
+
+
+def _fetch_creation_look_presets(client: Any) -> list[dict[str, Any]]:
+    try:
+        rows = (
+            client.table("creation_look_presets")
+            .select("*")
+            .eq("is_active", True)
+            .order("sort_order")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+    presets: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        preset = _normalize_preset_row(row)
+        if preset is not None:
+            presets.append(preset)
+    return presets
+
+
+def _attach_engine_presets(
+    engine: dict[str, Any],
+    *,
+    task_key: str,
+    engine_id: str,
+    presets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    engine_presets = [
+        {
+            key: value
+            for key, value in preset.items()
+            if key not in {"_taskKey", "_engineId"}
+        }
+        for preset in presets
+        if preset.get("_taskKey") == task_key and preset.get("_engineId") == engine_id
+    ]
+    if not engine_presets:
+        return engine
+    return {
+        **engine,
+        "presets": sorted(
+            engine_presets,
+            key=lambda preset: int(preset.get("sortOrder") or 100),
+        ),
+    }
+
+
 def _finalize_engines_payload(payload: dict[str, Any]) -> dict[str, Any]:
     ordered_engines = _sort_surface_engines(payload.get("engines") or [])
     default_engine_id = next(
@@ -724,6 +803,7 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
         task_rows = []
     if task_rows:
         task_rows_by_id = {str(row["id"]): row for row in task_rows if row.get("id")}
+    creation_look_presets = _fetch_creation_look_presets(client)
 
     published_version_ids = [
         str(row.get("published_version_id") or row.get("active_version_id"))
@@ -871,6 +951,12 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
             )
             if normalized_engine is None:
                 continue
+            normalized_engine = _attach_engine_presets(
+                normalized_engine,
+                task_key=task_key,
+                engine_id=engine_id,
+                presets=creation_look_presets,
+            )
             existing_task_engines = {
                 str(engine.get("engineId")): engine for engine in task_payload.get("engines") or [] if engine.get("engineId")
             }
@@ -896,6 +982,12 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
             and normalized_engine["surface"] in surfaces
             and normalized_engine.get("isUserSelectable", True)
         ):
+            normalized_engine = _attach_engine_presets(
+                normalized_engine,
+                task_key=task_key,
+                engine_id=engine_id,
+                presets=creation_look_presets,
+            )
             surfaces[normalized_engine["surface"]][engine_id] = normalized_engine
 
     catalog["onModel"]["engines"] = list(surfaces["onModel"].values())

@@ -602,6 +602,18 @@ class GenerationUiStyleResponse(BaseModel):
     parameters: list[GenerationUiSectionResponse] = Field(default_factory=list)
 
 
+class GenerationUiPresetResponse(BaseModel):
+    """System-owned For You preset card for a creation engine."""
+
+    id: str
+    name: str
+    style: dict[str, str] = Field(default_factory=dict)
+    previewUri: str | None = None
+    previewStoragePath: str | None = None
+    requiredPlan: Literal["Free", "Starter", "Pro", "Designer"] | None = None
+    sortOrder: int = 100
+
+
 class GenerationUiSurfaceEngineResponse(BaseModel):
     """Renderable engine configuration for a specific creation surface."""
 
@@ -621,6 +633,7 @@ class GenerationUiSurfaceEngineResponse(BaseModel):
     defaultStyleId: str | None = None
     sections: list[GenerationUiSectionResponse] = Field(default_factory=list)
     styles: list[GenerationUiStyleResponse] = Field(default_factory=list)
+    presets: list[GenerationUiPresetResponse] = Field(default_factory=list)
     editConfig: GenerationUiEditConfigResponse | None = None
 
 
