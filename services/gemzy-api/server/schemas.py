@@ -136,6 +136,20 @@ class SavedLook(BaseModel):
     createdAt: str | None = None
     updatedAt: str | None = None
 
+class CreationLookPreset(BaseModel):
+    id: str
+    taskKey: str
+    engineId: str
+    name: str
+    style: dict[str, Any] = Field(default_factory=dict)
+    previewUrl: str | None = None
+    previewStoragePath: str | None = None
+    mediaUrls: list[str] = Field(default_factory=list)
+    requiredPlan: Literal["Free", "Starter", "Pro", "Designer"] | None = None
+    sortOrder: int | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+
 
 class CreateSavedLookPayload(BaseModel):
     name: str
