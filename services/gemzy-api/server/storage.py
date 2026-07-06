@@ -15,6 +15,15 @@ from google.oauth2 import service_account
 _STORAGE_CLIENT: storage.Client | None = None
 _SIGNER: Signer | None = None
 _SIGNING_SA: str | None = None
+_CACHED_CREDS = None
+
+def _get_credentials():
+    global _CACHED_CREDS
+    if _CACHED_CREDS is None:
+        _CACHED_CREDS, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    if not _CACHED_CREDS.valid or _CACHED_CREDS.expired or _CACHED_CREDS.token is None:
+        _CACHED_CREDS.refresh(Request())
+    return _CACHED_CREDS
 
 
 def get_storage_client(project: str | None) -> storage.Client:
@@ -95,9 +104,7 @@ def _get_signer() -> tuple[Signer, str]:
 
 
 def generate_signed_read_url_v4(blob: storage.Blob, seconds: int = 300) -> str:
-    creds, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    if not creds.valid or creds.expired or creds.token is None:
-        creds.refresh(Request())
+    creds = _get_credentials()
 
     sa_email = os.getenv("GCS_SIGNING_SERVICE_ACCOUNT") or getattr(creds, "service_account_email", None)
     if not sa_email:
@@ -118,9 +125,7 @@ def generate_signed_upload_url_v4(
     content_type: str,
     seconds: int = 300,
 ) -> str:
-    creds, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    if not creds.valid or creds.expired or creds.token is None:
-        creds.refresh(Request())
+    creds = _get_credentials()
 
     sa_email = os.getenv("GCS_SIGNING_SERVICE_ACCOUNT") or getattr(
         creds, "service_account_email", None

@@ -22,6 +22,12 @@ from server.generation_state import GenerationJob, reset_jobs
 from server.schemas import UserState
 
 
+@pytest.fixture(autouse=True)
+def _reset_generation_rate_limiter() -> None:
+    """Keep route-level limiter state from leaking across tests."""
+
+    generations.limiter.reset()
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Return a test client for the generation router."""
@@ -1189,6 +1195,158 @@ def test_generation_event_requires_secret(
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid generation signature"
 
+
+DEMO_MOTION_VIDEO_PATH = Path("C:/gemzy/assets/create-menu/motion.mp4")
+
+
+@pytest.mark.skipif(
+    not DEMO_MOTION_VIDEO_PATH.exists(),
+    reason="Local Gemzy demo motion video is not available",
+)
+def test_motion_generation_demo_video_uploads_to_storage_and_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The motion route should store demo MP4 bytes and return a signed URL."""
+
+    inserted_payloads: list[dict[str, Any]] = []
+    uploaded: list[dict[str, Any]] = []
+
+    class _Blob:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.metadata: dict[str, Any] | None = None
+            self.cache_control: str | None = None
+
+        def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
+            uploaded.append(
+                {
+                    "name": self.name,
+                    "size": len(data),
+                    "content_type": content_type,
+                    "metadata": self.metadata,
+                }
+            )
+
+    class _Bucket:
+        def blob(self, name: str) -> _Blob:
+            return _Blob(name)
+
+    class _Response:
+        def __init__(self, data: list[dict[str, Any]], count: int = 1) -> None:
+            self.data = data
+            self.count = count
+
+    class _CollectionTable:
+        def insert(
+            self, payload: dict[str, Any], returning: str | None = None
+        ) -> "_CollectionTable":
+            self.payload = payload
+            self.returning = returning
+            return self
+
+        def execute(self) -> _Response:
+            inserted_payloads.append(self.payload)
+            return _Response(
+                [{"id": "motion-item-1", "created_at": "2026-07-02T12:00:00"}]
+            )
+
+    credit_client = _CreditClient(credits={"user-123": 20})
+
+    class _Client:
+        def table(self, name: str):
+            if name == "profiles":
+                return _CreditTable(credit_client, name)
+            if name == "collection_items":
+                return _CollectionTable()
+            raise AssertionError(f"Unexpected table {name}")
+
+    class _NoNetworkClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self):
+            raise AssertionError("Demo motion flow should not call Segmind")
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
+            return None
+
+    app = FastAPI()
+    app.include_router(generations.router)
+    app.dependency_overrides[generations.get_current_user] = lambda: UserState(
+        id="user-123",
+        name="Test User",
+        plan="Pro",
+        credits=20,
+    )
+    test_client = TestClient(app)
+
+    monkeypatch.setenv(
+        generations.MOTION_DEMO_VIDEO_PATH_ENV,
+        str(DEMO_MOTION_VIDEO_PATH),
+    )
+    monkeypatch.delenv("SEGMIND_KEY", raising=False)
+    monkeypatch.setattr(generations, "get_client", lambda: _Client())
+    monkeypatch.setattr(generations, "_get_collections_bucket", lambda: _Bucket())
+    monkeypatch.setattr(
+        generations,
+        "_resolve_collection_image_variants",
+        lambda _image_url, storage_path, include_signed=False: (
+            f"https://signed.example/{storage_path}?preview=1",
+            f"https://signed.example/{storage_path}?full=1",
+        ),
+    )
+    monkeypatch.setattr(generations, "ensure_unsaved_collection", lambda _user_id: "draft-1")
+    monkeypatch.setattr(generations.httpx, "AsyncClient", _NoNetworkClient)
+    reset_jobs()
+
+    response = test_client.post(
+        "/generations/motion",
+        json={
+            "prompt": "slow editorial camera push",
+            "firstFrameUrl": "https://cdn.example/source.png",
+            "duration": 8,
+            "resolution": "720p",
+            "aspectRatio": "9:16",
+            "videoCount": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["remainingCredits"] == 16
+    assert body["totalLooks"] == 1
+    assert body["completedLooks"] == 1
+
+    result = body["results"][0]
+    assert result["url"].startswith("https://signed.example/user-123/motion/")
+    assert not result["url"].startswith("data:")
+    assert result["mediaType"] == "video"
+    assert result["contentType"] == "video/mp4"
+    assert result["storagePath"].startswith("user-123/motion/")
+    assert result["collectionId"] == "draft-1"
+    assert result["collectionItemId"] == "motion-item-1"
+    assert result["metadata"]["source"] == "motion"
+    assert result["metadata"]["mediaType"] == "video"
+    assert result["metadata"]["provider"] == "demo"
+
+    assert len(uploaded) == 1
+    assert uploaded[0]["name"] == result["storagePath"]
+    assert uploaded[0]["content_type"] == "video/mp4"
+    assert uploaded[0]["size"] == DEMO_MOTION_VIDEO_PATH.stat().st_size
+    assert uploaded[0]["metadata"]["source"] == "motion"
+    assert uploaded[0]["metadata"]["mediaType"] == "video"
+
+    assert len(inserted_payloads) == 1
+    inserted = inserted_payloads[0]
+    assert inserted["collection_id"] == "draft-1"
+    assert inserted["user_id"] == "user-123"
+    assert inserted["external_id"] == result["storagePath"]
+    assert inserted["image_url"] == result["storagePath"]
+    assert inserted["metadata"]["contentType"] == "video/mp4"
+    assert inserted["metadata"]["size"] == DEMO_MOTION_VIDEO_PATH.stat().st_size
+    assert inserted["metadata"]["taskType"] == "motion"
+    assert credit_client.credits["user-123"] == 16
 
 def test_persist_generation_result_refreshes_draft_cover(
     monkeypatch: pytest.MonkeyPatch,

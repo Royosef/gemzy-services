@@ -50,6 +50,7 @@ from .schemas import (
     CreateGenerationPayload,
     CreateGenerationResponse,
     CreateImageEditPayload,
+    CreateMotionGenerationPayload,
     GenerationModelPayload,
     GenerationUiCatalogResponse,
     GenerationJobEvent,
@@ -77,6 +78,12 @@ GENERATION_START_FAILURE_MESSAGE = "Unable to start generation right now. Please
 GENERATION_JOB_FAILURE_MESSAGE = "Generation failed. Please try again."
 IMAGE_EDIT_START_FAILURE_MESSAGE = "Unable to start image edit right now. Please try again."
 IMAGE_EDIT_JOB_FAILURE_MESSAGE = "Image edit failed. Please try again."
+MOTION_START_FAILURE_MESSAGE = "Unable to start motion generation right now. Please try again."
+SEGMIND_SEEDANCE_URL = "https://api.segmind.com/v1/seedance-2.0"
+MOTION_REQUIRED_PLAN = "Pro"
+MOTION_DEMO_VIDEO_PATH_ENV = "GEMZY_MOTION_DEMO_VIDEO_PATH"
+MOTION_DEFAULT_VIDEO_CONTENT_TYPE = "video/mp4"
+MOTION_MAX_VIDEO_BYTES = 200 * 1024 * 1024
 DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
 BASE_TASK_TYPE_ON_MODEL = "on-model"
 BASE_TASK_TYPE_PURE_JEWELRY = "pure-jewelry"
@@ -697,10 +704,12 @@ def _build_result_metadata_payload(
     *,
     image_size: int | None = None,
     content_type: str = "image/png",
+    media_type: str = "image",
 ) -> dict[str, Any]:
     metadata_payload: dict[str, Any] = {
         "contentType": content_type,
-        "source": "image_edit" if job.job_type == "image_edit" else "generation",
+        "mediaType": media_type,
+        "source": job.job_type if job.job_type != "generation" else "generation",
         "jobId": job.id,
         "durationMs": int(
             (datetime.utcnow() - job.created_at).total_seconds() * 1000
@@ -1016,6 +1025,145 @@ def _persist_generation_result(
     )
 
 
+async def _persist_motion_result(
+    job: GenerationJob, incoming: GenerationResultPayload
+) -> GenerationResultPayload:
+    """Upload a generated motion video to storage and persist its DB record."""
+
+    video_bytes, content_type, provider_url = await _load_motion_video_bytes(incoming)
+    if len(video_bytes) > MOTION_MAX_VIDEO_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Motion video is too large to store",
+        )
+
+    normalized_content_type = content_type.split(";", 1)[0].strip() or MOTION_DEFAULT_VIDEO_CONTENT_TYPE
+    if not normalized_content_type.startswith("video/"):
+        normalized_content_type = MOTION_DEFAULT_VIDEO_CONTENT_TYPE
+
+    bucket = _get_collections_bucket()
+    storage_prefix = f"{_user_storage_prefix(job.user_id)}/motion/{job.id}"
+    storage_name = f"{storage_prefix}/{uuid4().hex}{_motion_video_extension(normalized_content_type)}"
+    blob = bucket.blob(storage_name)
+
+    metadata = {
+        "appUserId": job.user_id,
+        "source": "motion",
+        "mediaType": "video",
+        "contentType": normalized_content_type,
+        "jobId": job.id,
+    }
+    if COLLECTIONS_OWNER_METADATA_KEY and COLLECTIONS_OWNER_METADATA_KEY != "appUserId":
+        metadata[COLLECTIONS_OWNER_METADATA_KEY] = job.user_id
+    if job.model_id:
+        metadata["modelId"] = job.model_id
+    if job.model_name:
+        metadata["modelName"] = job.model_name
+    if job.aspect:
+        metadata["aspect"] = job.aspect
+    if job.quality:
+        metadata["quality"] = job.quality
+    if job.style:
+        metadata["style"] = json.dumps(job.style)
+        task_type = job.style.get("task_type")
+        if task_type:
+            metadata["taskType"] = task_type
+
+    blob.metadata = metadata
+    if COLLECTIONS_CACHE_CONTROL:
+        blob.cache_control = COLLECTIONS_CACHE_CONTROL
+    blob.upload_from_string(video_bytes, content_type=normalized_content_type)
+
+    storage_path = _normalize_storage_path(storage_name) or storage_name
+    preview_url, view_url = _resolve_collection_image_variants(
+        None,
+        storage_path,
+        include_signed=True,
+    )
+    if not view_url or not view_url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to generate signed URL for motion video",
+        )
+
+    collection_id = job.unsaved_collection_id or ensure_unsaved_collection(job.user_id)
+    job.unsaved_collection_id = collection_id
+
+    metadata_payload = _build_result_metadata_payload(
+        job,
+        image_size=len(video_bytes),
+        content_type=normalized_content_type,
+        media_type="video",
+    )
+    metadata_payload.update(incoming.metadata or {})
+    metadata_payload.update(
+        {
+            "source": "motion",
+            "mediaType": "video",
+            "contentType": normalized_content_type,
+            "storagePath": storage_path,
+        }
+    )
+    if provider_url:
+        metadata_payload["providerUrl"] = provider_url
+
+    record_payload: dict[str, Any] = {
+        "collection_id": collection_id,
+        "user_id": job.user_id,
+        "external_id": storage_path,
+        "image_url": storage_path,
+        "metadata": metadata_payload,
+        "model_id": job.model_id,
+        "model_name": job.model_name,
+        "is_new": True,
+    }
+
+    try:
+        resp = get_client().table("collection_items").insert(
+            record_payload, returning="representation"
+        ).execute()
+        inserted = resp.data or []
+    except APIError as exc:
+        if not _is_missing_model_columns(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to store motion video metadata",
+            ) from exc
+        fallback_payload = dict(record_payload)
+        fallback_payload.pop("model_id", None)
+        fallback_payload.pop("model_name", None)
+        resp = get_client().table("collection_items").insert(
+            fallback_payload, returning="representation"
+        ).execute()
+        inserted = resp.data or []
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to store motion video metadata",
+        ) from exc
+
+    record = inserted[0] if inserted and isinstance(inserted[0], dict) else {}
+    created_at = record.get("created_at")
+    created_iso = (
+        created_at
+        if isinstance(created_at, str)
+        else datetime.utcnow().replace(microsecond=0).isoformat()
+    )
+
+    return GenerationResultPayload(
+        url=view_url,
+        previewUrl=preview_url or view_url,
+        mediaType="video",
+        contentType=normalized_content_type,
+        storagePath=storage_path,
+        collectionId=collection_id,
+        collectionItemId=record.get("id"),
+        modelId=job.model_id,
+        modelName=job.model_name,
+        createdAt=created_iso,
+        metadata=metadata_payload,
+    )
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -1082,6 +1230,255 @@ COST_PER_LOOK = {
     "2K": 5,
     "4K": 7,
 }
+
+
+def _validate_motion_frame_url(value: str) -> str:
+    frame_url = value.strip()
+    if not frame_url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Motion generation requires an HTTP image URL.",
+        )
+    return frame_url
+
+
+def _extract_motion_json_url(data: Any) -> str | None:
+    if isinstance(data, str):
+        return data if data.startswith(("http://", "https://")) else None
+    if isinstance(data, dict):
+        for key in ("url", "video_url", "videoUrl", "output", "output_url"):
+            url = _extract_motion_json_url(data.get(key))
+            if url:
+                return url
+        for value in data.values():
+            url = _extract_motion_json_url(value)
+            if url:
+                return url
+    if isinstance(data, list):
+        for value in data:
+            url = _extract_motion_json_url(value)
+            if url:
+                return url
+    return None
+
+
+def _motion_result_metadata(
+    payload: CreateMotionGenerationPayload,
+    *,
+    provider: str,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "source": source,
+        "model": "seedance-2.0" if provider == "segmind" else "demo-motion",
+        "duration": payload.duration,
+        "resolution": payload.resolution,
+        "aspectRatio": payload.aspectRatio,
+        "contentType": MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
+        "mediaType": "video",
+    }
+
+
+def _load_demo_motion_result(
+    payload: CreateMotionGenerationPayload,
+) -> GenerationResultPayload | None:
+    demo_path = os.getenv(MOTION_DEMO_VIDEO_PATH_ENV, "").strip()
+    if not demo_path:
+        return None
+
+    try:
+        with open(demo_path, "rb") as video_file:
+            video_bytes = video_file.read()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Configured demo motion video is not readable",
+        ) from exc
+
+    encoded = base64.b64encode(video_bytes).decode("ascii")
+    return GenerationResultPayload(
+        url=f"data:{MOTION_DEFAULT_VIDEO_CONTENT_TYPE};base64,{encoded}",
+        mediaType="video",
+        contentType=MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
+        metadata=_motion_result_metadata(payload, provider="demo", source="local-demo"),
+    )
+
+
+def _decode_data_url_bytes(value: str) -> tuple[bytes, str]:
+    if not value.startswith("data:") or "," not in value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid data URL payload",
+        )
+
+    header, encoded = value.split(",", 1)
+    content_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+    try:
+        return base64.b64decode(encoded), content_type
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid video payload",
+        ) from exc
+
+
+def _motion_content_type_from_result(
+    result: GenerationResultPayload,
+    fallback: str = MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
+) -> str:
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    for key in ("contentType", "mimeType"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().split(";", 1)[0]
+    if isinstance(result.contentType, str) and result.contentType.strip():
+        return result.contentType.strip().split(";", 1)[0]
+    return fallback
+
+
+def _motion_video_extension(content_type: str) -> str:
+    normalized = content_type.split(";", 1)[0].strip().lower()
+    return {
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "video/quicktime": ".mov",
+        "application/octet-stream": ".mp4",
+    }.get(normalized, ".mp4")
+
+
+async def _load_motion_video_bytes(
+    result: GenerationResultPayload,
+) -> tuple[bytes, str, str | None]:
+    if result.base64:
+        video_bytes, content_type = _decode_data_url_bytes(
+            result.base64
+            if result.base64.startswith("data:")
+            else f"data:{_motion_content_type_from_result(result)};base64,{result.base64}"
+        )
+        return video_bytes, content_type, None
+
+    if result.url and result.url.startswith("data:"):
+        video_bytes, content_type = _decode_data_url_bytes(result.url)
+        return video_bytes, content_type, None
+
+    if result.url and result.url.startswith(("http://", "https://")):
+        timeout = float(os.getenv("SEGMIND_DOWNLOAD_TIMEOUT", "300"))
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(result.url)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Motion video download failed: {detail}",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Motion video download failed",
+            ) from exc
+
+        content_type = response.headers.get(
+            "content-type", _motion_content_type_from_result(result)
+        ).split(";", 1)[0]
+        return response.content, content_type, result.url
+
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="Motion provider response did not include video data",
+    )
+
+async def _request_seedance_motion(
+    payload: CreateMotionGenerationPayload,
+    *,
+    look_index: int,
+) -> GenerationResultPayload:
+    demo_result = _load_demo_motion_result(payload)
+    if demo_result is not None:
+        return demo_result
+
+    api_key = os.getenv("SEGMIND_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Motion generation provider is not configured",
+        )
+
+    request_payload: dict[str, Any] = {
+        "prompt": payload.prompt,
+        "first_frame_url": _validate_motion_frame_url(payload.firstFrameUrl),
+        "duration": payload.duration,
+        "resolution": payload.resolution,
+        "aspect_ratio": payload.aspectRatio,
+        "generate_audio": payload.generateAudio,
+        "return_last_frame": payload.returnLastFrame,
+    }
+    if payload.seed is not None:
+        request_payload["seed"] = (
+            min(2147483647, payload.seed + look_index)
+            if payload.seed >= 0
+            else payload.seed
+        )
+
+    timeout = float(os.getenv("SEGMIND_TIMEOUT", "900"))
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                SEGMIND_SEEDANCE_URL,
+                headers=headers,
+                json=request_payload,
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Motion provider rejected the request: {detail}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Motion provider request failed",
+        ) from exc
+
+    content_type = response.headers.get("content-type", "application/octet-stream")
+    if "application/json" in content_type.lower():
+        data = response.json()
+        url = _extract_motion_json_url(data)
+        if not url:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Motion provider response did not include a video URL",
+            )
+        return GenerationResultPayload(
+            url=url,
+            mediaType="video",
+            contentType=MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
+            metadata={
+                "provider": "segmind",
+                "model": "seedance-2.0",
+                "duration": payload.duration,
+                "resolution": payload.resolution,
+                "aspectRatio": payload.aspectRatio,
+            },
+        )
+
+    encoded = base64.b64encode(response.content).decode("ascii")
+    return GenerationResultPayload(
+        url=f"data:{content_type};base64,{encoded}",
+        mediaType="video",
+        contentType=content_type.split(";", 1)[0],
+        metadata={
+            "provider": "segmind",
+            "model": "seedance-2.0",
+            "duration": payload.duration,
+            "resolution": payload.resolution,
+            "aspectRatio": payload.aspectRatio,
+        },
+    )
 
 
 @router.get("/config")
@@ -1462,6 +1859,81 @@ def submit_image_edit_feedback(
     return ImageEditFeedbackResponse(id=feedback_id, createdAt=created_at)
 
 
+@router.post("/motion", response_model=CreateGenerationResponse)
+@limiter.limit(LIMIT_generation_create)
+async def create_motion_generation(
+    request: Request,
+    payload: CreateMotionGenerationPayload,
+    user: UserState = Depends(get_current_user),
+) -> CreateGenerationResponse:
+    """Generate a Seedance motion video from a selected image URL."""
+
+    from .plans import normalize_plan
+
+    tier_levels = {"Free": 0, "Starter": 1, "Pro": 2, "Designer": 3}
+    user_tier = normalize_plan(user.plan)
+    required_tier = normalize_plan(MOTION_REQUIRED_PLAN)
+    if tier_levels.get(user_tier, 0) < tier_levels.get(required_tier, 0):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This model requires the {required_tier} plan.",
+        )
+
+    required_credits = payload.videoCount * COST_PER_LOOK["1080p"]
+    if required_credits > user.credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="You do not have enough credits to perform this action",
+        )
+
+    job_id = uuid4().hex
+    new_credits = _adjust_profile_credits(user.id, -required_credits)
+    if new_credits is None:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="You do not have enough credits to perform this action",
+        )
+
+    job = create_job(
+        job_id,
+        user.id,
+        payload.videoCount,
+        model_id="motion-v1",
+        model_name="Motion",
+        style={"task_type": "motion", "prompt": payload.prompt},
+        aspect=payload.aspectRatio,
+        dims={"w": 608, "h": 1080},
+        quality=payload.resolution,
+        job_type="motion",
+    )
+
+    mark_started(job)
+    try:
+        for index in range(payload.videoCount):
+            provider_result = await _request_seedance_motion(payload, look_index=index)
+            result = await _persist_motion_result(job, provider_result)
+            add_result(job, result)
+            update_progress(
+                job,
+                (index + 1) / payload.videoCount,
+                index + 1,
+            )
+        mark_completed(job)
+    except Exception:
+        try:
+            _adjust_profile_credits(user.id, required_credits)
+        except Exception:
+            logger.exception(
+                "Failed to refund credits for user %s after motion failure", user.id
+            )
+        mark_failed(job, MOTION_START_FAILURE_MESSAGE)
+        raise
+
+    job_state = to_response(job)
+    job_state["remainingCredits"] = new_credits
+    return CreateGenerationResponse(**job_state)
+
+
 @router.post("/", response_model=CreateGenerationResponse)
 @limiter.limit(LIMIT_generation_create)
 async def create_generation(
@@ -1701,5 +2173,3 @@ async def receive_generation_event(
         )
 
     return CreateGenerationResponse(**to_response(job))
-
-

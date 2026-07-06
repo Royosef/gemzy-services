@@ -195,8 +195,11 @@ class CollectionImage(BaseModel):
     """Single asset inside a collection."""
 
     id: str
+    collectionId: str | None = None
     uri: str
     previewUri: str | None = None
+    mediaType: str | None = None
+    contentType: str | None = None
     category: str | None = None
     isNew: bool = False
     isFavorite: bool = False
@@ -440,6 +443,8 @@ class GenerationResultPayload(BaseModel):
 
     url: str | None = None
     previewUrl: str | None = None
+    mediaType: Literal["image", "video"] | None = None
+    contentType: str | None = None
     base64: str | None = None
     storagePath: str | None = None
     collectionId: str | None = None
@@ -493,6 +498,23 @@ class CreateImageEditPayload(BaseModel):
         default_factory=lambda: GenerationDimensions(w=1080, h=1080)
     )
     quality: GenerationQuality = "1080p"
+
+
+class CreateMotionGenerationPayload(BaseModel):
+    """Payload sent by the client to generate a motion video."""
+
+    prompt: str
+    firstFrameUrl: str
+    duration: Literal[4, 5, 6, 8, 10, 12, 15] = 8
+    resolution: Literal["480p", "720p"] = "720p"
+    aspectRatio: Literal[
+        "16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"
+    ] = "9:16"
+    generateAudio: bool = False
+    seed: int | None = Field(default=None, ge=-1, le=2147483647)
+    returnLastFrame: bool = False
+    videoCount: int = Field(default=1, ge=1, le=4)
+    creditsNeeded: int | None = Field(default=None, ge=0)
 
 
 class ImageEditFeedbackRequest(BaseModel):
@@ -1229,4 +1251,3 @@ class DashboardAdminBrainContextResponse(BaseModel):
     notes: DashboardAdminBrainContextNotesResponse = Field(
         default_factory=DashboardAdminBrainContextNotesResponse
     )
-

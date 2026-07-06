@@ -295,6 +295,30 @@ def _extract_model_identifiers(
     return model_id, model_name
 
 
+
+def _collection_item_media_fields(metadata: Mapping[str, Any] | None) -> dict[str, str]:
+    if not isinstance(metadata, Mapping):
+        return {}
+
+    media_type = _coerce_str(metadata.get("mediaType") or metadata.get("media_type"))
+    content_type = _coerce_str(metadata.get("contentType") or metadata.get("content_type"))
+
+    if media_type not in {"image", "video"}:
+        normalized_content_type = (content_type or "").lower()
+        if normalized_content_type.startswith("video/"):
+            media_type = "video"
+        elif normalized_content_type.startswith("image/"):
+            media_type = "image"
+        else:
+            media_type = None
+
+    fields: dict[str, str] = {}
+    if media_type:
+        fields["mediaType"] = media_type
+    if content_type:
+        fields["contentType"] = content_type
+    return fields
+
 def _generate_signed_image_url(
     normalized_path: str, *, ttl_seconds: int | None = None
 ) -> str | None:
@@ -546,12 +570,14 @@ def _map_collections(
 
         collection_item = CollectionImage(
             id=item.get("external_id") or item.get("id"),
+            collectionId=collection_id,
             uri=resolved_uri,
             previewUri=preview_uri,
             category=item.get("category"),
             isNew=bool(item.get("is_new")),
             isFavorite=bool(item.get("is_favorite")),
             metadata=item.get("metadata"),
+            **_collection_item_media_fields(item.get("metadata")),
             modelId=model_id,
             modelName=model_name,
             storagePath=storage_path,
@@ -701,32 +727,8 @@ def _fetch_collections(
 
     collection_ids = [row["id"] for row in rows if row.get("id")]
 
-    # Fetch the latest item created_at per collection so we can sort
-    # collections by most-recently-added image instead of collection creation.
-    latest_item_dates: dict[str, str] = {}
-    try:
-        latest_items = (
-            sb.table("collection_items")
-            .select("collection_id,created_at")
-            .in_("collection_id", collection_ids)
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .execute()
-        ).data or []
-        for item in latest_items:
-            cid = item.get("collection_id")
-            if cid and cid not in latest_item_dates:
-                latest_item_dates[cid] = item.get("created_at", "")
-    except Exception:
-        pass  # If this fails, we keep the original created_at order
-
-    # Re-sort: collections with the newest item first
-    if latest_item_dates:
-        rows.sort(
-            key=lambda row: latest_item_dates.get(row.get("id", ""), row.get("created_at", "")),
-            reverse=True,
-        )
-
+    # Keep summary fetches cheap: do not scan collection_items here.
+    # Item pages and detail views load media through dedicated endpoints.
     items: list[dict] = []
 
     if include_items and collection_ids:
@@ -787,7 +789,7 @@ def get_recent_collection_items(
         preview_uri, resolved_uri = _resolve_collection_image_variants(
             item.get("image_url"),
             storage_path,
-            include_signed=True, 
+            include_signed=False, 
         )
         
         model_id = _coerce_str(item.get("model_id"))
@@ -800,12 +802,14 @@ def get_recent_collection_items(
         mapped.append(
             CollectionImage(
                 id=item.get("external_id") or item.get("id"),
+                collectionId=item.get("collection_id"),
                 uri=resolved_uri,
                 previewUri=preview_uri,
                 category=item.get("category"),
                 isNew=bool(item.get("is_new")),
                 isFavorite=bool(item.get("is_favorite")),
                 metadata=item.get("metadata"),
+                **_collection_item_media_fields(item.get("metadata")),
                 modelId=model_id,
                 modelName=model_name,
                 storagePath=storage_path,
@@ -1285,12 +1289,14 @@ def list_collection_items(
         items.append(
             CollectionImage(
                 id=raw_external_id or row.get("id"),
+                collectionId=collection_id,
                 uri=resolved_uri or "",
                 previewUri=preview_uri,
                 category=row.get("category"),
                 isNew=bool(row.get("is_new")),
                 isFavorite=bool(row.get("is_favorite")),
                 metadata=row.get("metadata"),
+                **_collection_item_media_fields(row.get("metadata")),
                 modelId=model_id,
                 modelName=model_name,
                 storagePath=storage_path,
@@ -1558,6 +1564,7 @@ def add_collection_items(
 @collections_router.get("/{collection_id}", response_model=Collection)
 def retrieve_collection(
     collection_id: str,
+    includeItems: bool = False,  # noqa: N803 - API casing
     current: UserState = Depends(get_current_user),
 ) -> Collection:
     """Return a single collection owned by the authenticated user."""
@@ -1566,7 +1573,7 @@ def retrieve_collection(
     collections = _fetch_collections(
         current.id,
         [collection_id],
-        include_items=False,
+        include_items=includeItems,
     )
     if not collections:
         raise HTTPException(
