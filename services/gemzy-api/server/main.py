@@ -88,6 +88,44 @@ def _resolve_persona_automation_poll_interval(default: float = 300.0) -> float |
     return interval if interval > 0 else None
 
 
+def _resolve_collection_variant_backfill_poll_interval(
+    default: float = 120.0,
+) -> float | None:
+    """Return the collection variant backfill interval or ``None`` if disabled."""
+
+    raw = os.getenv("COLLECTIONS_VARIANT_BACKFILL_POLL_SECONDS")
+    if raw is None:
+        return None
+    try:
+        interval = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid COLLECTIONS_VARIANT_BACKFILL_POLL_SECONDS=%r; using default %.0fs",
+            raw,
+            default,
+        )
+        return default
+    return interval if interval > 0 else None
+
+
+def _resolve_collection_variant_backfill_batch_size(default: int = 25) -> int:
+    """Return the per-iteration backfill batch size."""
+
+    raw = os.getenv("COLLECTIONS_VARIANT_BACKFILL_BATCH_SIZE")
+    if raw is None:
+        return default
+    try:
+        batch_size = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid COLLECTIONS_VARIANT_BACKFILL_BATCH_SIZE=%r; using default %s",
+            raw,
+            default,
+        )
+        return default
+    return max(1, batch_size)
+
+
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .rate_limit import limiter
@@ -169,6 +207,7 @@ async def start_deletion_worker() -> None:
 
 _credit_reset_worker_task: asyncio.Task | None = None
 _persona_automation_worker_task: asyncio.Task | None = None
+_collection_variant_backfill_worker_task: asyncio.Task | None = None
 
 @app.on_event("startup")
 async def start_credit_reset_worker() -> None:
@@ -227,6 +266,50 @@ async def start_persona_automation_worker() -> None:
     )
 
 
+@app.on_event("startup")
+async def start_collection_variant_backfill_worker() -> None:
+    """Launch a background task that gradually backfills public collection variants."""
+
+    global _collection_variant_backfill_worker_task
+    interval = _resolve_collection_variant_backfill_poll_interval()
+    if interval is None:
+        logger.info(
+            "Collection variant backfill worker disabled; set "
+            "COLLECTIONS_VARIANT_BACKFILL_POLL_SECONDS > 0"
+        )
+        return
+
+    batch_size = _resolve_collection_variant_backfill_batch_size()
+
+    async def worker() -> None:
+        cursor: str | None = None
+        while True:
+            try:
+                processed, cursor = await asyncio.to_thread(
+                    content.backfill_public_collection_variants_batch,
+                    limit=batch_size,
+                    cursor=cursor,
+                )
+                if processed:
+                    logger.info(
+                        "Backfilled %s collection variant asset(s)", processed
+                    )
+                if cursor is None:
+                    logger.info("Collection variant backfill pass completed")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to backfill collection variants")
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+
+    _collection_variant_backfill_worker_task = asyncio.create_task(
+        worker(), name="collection-variant-backfill-worker"
+    )
+
+
 @app.on_event("shutdown")
 async def stop_deletion_worker() -> None:
     """Cancel the background deletion worker when the app stops."""
@@ -252,11 +335,20 @@ async def stop_deletion_worker() -> None:
 
     global _persona_automation_worker_task
     if not _persona_automation_worker_task:
+        pass
+    else:
+        _persona_automation_worker_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _persona_automation_worker_task
+        _persona_automation_worker_task = None
+
+    global _collection_variant_backfill_worker_task
+    if not _collection_variant_backfill_worker_task:
         return
-    _persona_automation_worker_task.cancel()
+    _collection_variant_backfill_worker_task.cancel()
     with suppress(asyncio.CancelledError):
-        await _persona_automation_worker_task
-    _persona_automation_worker_task = None
+        await _collection_variant_backfill_worker_task
+    _collection_variant_backfill_worker_task = None
 
 
 from fastapi import FastAPI, Request, Response, status

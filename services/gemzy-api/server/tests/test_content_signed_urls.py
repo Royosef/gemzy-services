@@ -31,10 +31,17 @@ class _StubBucket:
         return _StubBlob()
 
 
+class _AnyPathBucket:
+    def blob(self, _path: str) -> _StubBlob:
+        return _StubBlob()
+
+
 class _StubTable:
     def __init__(self, data: list[dict[str, Any]]) -> None:
         self._data = data
         self._filters: list[tuple[str, Any]] = []
+        self._gt_filters: list[tuple[str, Any]] = []
+        self._limit: int | None = None
 
     def select(self, *_args: Any, **_kwargs: Any) -> _StubTable:
         return self
@@ -47,13 +54,26 @@ class _StubTable:
             self._filters.append((key, value))
         return self
 
+    def order(self, *_args: Any, **_kwargs: Any) -> _StubTable:
+        return self
+
     def limit(self, *_args: Any, **_kwargs: Any) -> _StubTable:
+        if _args:
+            self._limit = int(_args[0])
+        return self
+
+    def gt(self, key: str, value: Any) -> _StubTable:
+        self._gt_filters.append((key, value))
         return self
 
     def execute(self) -> SimpleNamespace:
         rows = self._data
         for key, value in self._filters:
             rows = [row for row in rows if row.get(key) == value]
+        for key, value in self._gt_filters:
+            rows = [row for row in rows if row.get(key) and row.get(key) > value]
+        if self._limit is not None:
+            rows = rows[: self._limit]
         return SimpleNamespace(data=rows)
 
 
@@ -199,7 +219,7 @@ def test_generate_signed_url_success(app: FastAPI) -> None:
     assert "expiresAt" in payload
 
 
-def test_generate_signed_url_rejects_other_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_signed_url_rejects_non_user_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.include_router(content.collections_router)
     app.dependency_overrides[content.get_current_user] = lambda: UserState(
@@ -227,7 +247,7 @@ def test_generate_signed_url_rejects_other_prefix(monkeypatch: pytest.MonkeyPatc
     )
 
     client = TestClient(app)
-    response = client.get("/collections/items/user-123/items/photo.png/signed-url")
+    response = client.get("/collections/items/someone-else/items/photo.png/signed-url")
     assert response.status_code == 404
 
 
@@ -268,6 +288,190 @@ def test_resolve_collection_image_variants_resigns_gcs_urls(
 
     assert preview == "https://signed.example/object.png"
     assert full == "https://signed.example/object.png"
+
+
+def test_resolve_collection_image_variants_prefers_public_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        content,
+        "_resolve_public_collection_variants",
+        lambda _path: (
+            "https://public.example/preview.webp",
+            "https://public.example/viewer-full.webp",
+        ),
+    )
+
+    preview, full = content._resolve_collection_image_variants(
+        "user-123/items/photo.png",
+        "user-123/items/photo.png",
+        include_signed=True,
+    )
+
+    assert preview == "https://public.example/preview.webp"
+    assert full == "https://public.example/viewer-full.webp"
+
+
+def test_generate_upload_authorization_returns_stable_storage_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(content, "COLLECTIONS_UPLOAD_TTL", 900)
+    monkeypatch.setattr(content, "COLLECTIONS_MAX_UPLOAD_BYTES", 26214400)
+    monkeypatch.setattr(
+        content,
+        "_get_collections_bucket",
+        lambda: _AnyPathBucket(),
+    )
+    monkeypatch.setattr(
+        content,
+        "generate_signed_upload_url_v4",
+        lambda *_args, **_kwargs: "https://signed.example/upload",
+    )
+
+    payload = content.CollectionUploadRequest(
+        contentType="image/png",
+        size=1024,
+    )
+
+    authorization = content._generate_upload_authorization("user-123", payload)
+
+    assert authorization.uploadUrl == "https://signed.example/upload"
+    assert authorization.publicUrl == authorization.storagePath
+    assert authorization.storagePath.startswith("user-123/")
+
+
+def test_recent_collection_items_return_public_variant_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(content.collections_router)
+    app.dependency_overrides[content.get_current_user] = lambda: UserState(
+        id="user-123",
+        name="Test User",
+        plan="Pro",
+        credits=10,
+    )
+    monkeypatch.setattr(
+        content,
+        "get_client",
+        lambda: _StubClient(
+            [{"external_id": "user-123/items/photo.png", "user_id": "user-123"}]
+        ),
+    )
+    monkeypatch.setattr(
+        content,
+        "_resolve_public_collection_variants",
+        lambda _path: (
+            "https://public.example/preview.webp",
+            "https://public.example/viewer-full.webp",
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.get("/collections/recent-items")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["uri"] == "https://public.example/viewer-full.webp"
+    assert payload[0]["previewUri"] == "https://public.example/preview.webp"
+
+
+def test_backfill_public_collection_variants_batch_generates_missing_assets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {
+            "id": "item-1",
+            "external_id": "user-123/items/existing.png",
+            "image_url": None,
+            "created_at": "2026-01-01T00:00:00",
+        },
+        {
+            "id": "item-2",
+            "external_id": "user-123/items/missing.png",
+            "image_url": None,
+            "created_at": "2026-01-02T00:00:00",
+        },
+    ]
+    generated: list[str] = []
+
+    monkeypatch.setattr(content, "get_client", lambda: _StubClient(rows))
+    monkeypatch.setattr(content, "_maybe_get_collections_bucket", lambda: object())
+    monkeypatch.setattr(
+        content, "_maybe_get_public_collections_bucket", lambda: object()
+    )
+
+    def fake_resolve(path: str) -> tuple[str | None, str | None]:
+        if path == "user-123/items/existing.png":
+            return (
+                "https://public.example/existing-preview.webp",
+                "https://public.example/existing-full.webp",
+            )
+        if path in generated:
+            return (
+                "https://public.example/generated-preview.webp",
+                "https://public.example/generated-full.webp",
+            )
+        return None, None
+
+    monkeypatch.setattr(content, "_resolve_public_collection_variants", fake_resolve)
+    monkeypatch.setattr(
+        content,
+        "_generate_public_collection_variants",
+        lambda path, content_type=None: generated.append(path),
+    )
+
+    processed, next_cursor = content.backfill_public_collection_variants_batch(limit=10)
+
+    assert processed == 1
+    assert generated == ["user-123/items/missing.png"]
+    assert next_cursor is None
+
+
+def test_backfill_public_collection_variants_batch_honors_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {
+            "id": "item-1",
+            "external_id": "user-123/items/first.png",
+            "image_url": None,
+            "created_at": "2026-01-01T00:00:00",
+        },
+        {
+            "id": "item-2",
+            "external_id": "user-123/items/second.png",
+            "image_url": None,
+            "created_at": "2026-01-02T00:00:00",
+        },
+    ]
+
+    monkeypatch.setattr(content, "get_client", lambda: _StubClient(rows))
+    monkeypatch.setattr(content, "_maybe_get_collections_bucket", lambda: object())
+    monkeypatch.setattr(
+        content, "_maybe_get_public_collections_bucket", lambda: object()
+    )
+    monkeypatch.setattr(
+        content,
+        "_resolve_public_collection_variants",
+        lambda _path: (
+            "https://public.example/preview.webp",
+            "https://public.example/full.webp",
+        ),
+    )
+    monkeypatch.setattr(
+        content,
+        "_generate_public_collection_variants",
+        lambda *_args, **_kwargs: pytest.fail("should not generate variants"),
+    )
+
+    processed, next_cursor = content.backfill_public_collection_variants_batch(
+        limit=1,
+        cursor="2026-01-01T00:00:00",
+    )
+
+    assert processed == 0
+    assert next_cursor == "2026-01-02T00:00:00"
 
 
 def test_ensure_unsaved_collection_creates_deterministic_draft_id(

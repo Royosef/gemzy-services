@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import mimetypes
 import os
 from datetime import datetime, timedelta
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from PIL import Image, ImageOps
 
 from .auth import get_current_user
 from .schemas import (
@@ -34,6 +36,7 @@ from .schemas import (
 )
 from .supabase_client import get_client
 from .storage import (
+    build_public_url,
     generate_signed_read_url_v4,
     generate_signed_upload_url_v4,
     get_bucket,
@@ -42,6 +45,8 @@ from .storage import (
 )
 
 _COLLECTIONS_BUCKET_CACHE = None
+_PUBLIC_COLLECTIONS_BUCKET_CACHE = None
+_PUBLIC_VARIANT_URL_CACHE: dict[str, tuple[str | None, str | None]] = {}
 
 collections_router = APIRouter(prefix="/collections", tags=["collections"])
 models_router = APIRouter(prefix="/models", tags=["models"])
@@ -57,6 +62,7 @@ COLLECTIONS_APP_BUCKET = (
     os.getenv("GCS_COLLECTIONS_APP_BUCKET") or COLLECTIONS_PUBLIC_BUCKET
 )
 COLLECTIONS_PROJECT = os.getenv("GCS_PROJECT")
+COLLECTIONS_PUBLIC_HOST = os.getenv("GCS_PUBLIC_HOST")
 
 COLLECTIONS_UPLOAD_TTL = int(os.getenv("GCS_UPLOAD_URL_TTL", "900"))
 COLLECTIONS_VIEW_TTL = int(os.getenv("GCS_VIEW_URL_TTL", "900"))
@@ -73,6 +79,15 @@ LEGACY_UNSAVED_COLLECTION_NAMES = tuple(
     name.strip()
     for name in os.getenv("LEGACY_UNSAVED_COLLECTION_NAMES", "Unsaved").split(",")
     if name.strip()
+)
+COLLECTIONS_THUMB_MAX_DIMENSION = int(
+    os.getenv("GCS_COLLECTIONS_THUMB_MAX_DIMENSION", "512")
+)
+COLLECTIONS_PREVIEW_MAX_DIMENSION = int(
+    os.getenv("GCS_COLLECTIONS_PREVIEW_MAX_DIMENSION", "1600")
+)
+COLLECTIONS_VIEWER_FULL_MAX_DIMENSION = int(
+    os.getenv("GCS_COLLECTIONS_VIEWER_FULL_MAX_DIMENSION", "2560")
 )
 
 # ------------------------------------------------------------------------------
@@ -147,6 +162,18 @@ def _maybe_get_collections_bucket():
     return bucket
 
 
+def _maybe_get_public_collections_bucket():
+    """Return the public collections bucket if configured."""
+
+    global _PUBLIC_COLLECTIONS_BUCKET_CACHE
+    if _PUBLIC_COLLECTIONS_BUCKET_CACHE is not None:
+        return _PUBLIC_COLLECTIONS_BUCKET_CACHE
+
+    bucket = maybe_get_bucket(COLLECTIONS_PUBLIC_BUCKET, COLLECTIONS_PROJECT)
+    _PUBLIC_COLLECTIONS_BUCKET_CACHE = bucket
+    return bucket
+
+
 def _get_collections_bucket():
     """
     Return the collections bucket or raise if not configured, using the same cache.
@@ -162,6 +189,202 @@ def _get_collections_bucket():
     )
     _COLLECTIONS_BUCKET_CACHE = bucket
     return bucket
+
+
+def _safe_asset_segment(value: str) -> str:
+    normalized = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-"
+        for char in value.strip()
+    ).strip("-_")
+    return normalized or "asset"
+
+
+def _collection_variant_paths(storage_path: str) -> dict[str, str]:
+    normalized = storage_path.strip().lstrip("/")
+    parts = normalized.split("/")
+    prefix = parts[0] if parts else "asset"
+    filename = parts[-1] if parts else normalized
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    asset_id = _safe_asset_segment(stem)
+    base = f"{prefix}/derived/{asset_id}"
+    return {
+        "thumb": f"{base}/thumb.webp",
+        "preview": f"{base}/preview.webp",
+        "viewer-full": f"{base}/viewer-full.webp",
+    }
+
+
+def _build_collection_public_asset_url(object_path: str) -> str:
+    return build_public_url(
+        object_path,
+        COLLECTIONS_PUBLIC_BUCKET,
+        public_host=COLLECTIONS_PUBLIC_HOST,
+    )
+
+
+def _resolve_public_collection_variants(
+    normalized_path: str,
+) -> tuple[str | None, str | None]:
+    cached = _PUBLIC_VARIANT_URL_CACHE.get(normalized_path)
+    if cached is not None:
+        return cached
+
+    bucket = _maybe_get_public_collections_bucket()
+    if bucket is None:
+        return None, None
+
+    variant_paths = _collection_variant_paths(normalized_path)
+    try:
+        preview_blob = bucket.blob(variant_paths["preview"])
+        full_blob = bucket.blob(variant_paths["viewer-full"])
+        preview_exists = preview_blob.exists()
+        full_exists = full_blob.exists()
+    except Exception:
+        preview_exists = False
+        full_exists = False
+
+    preview_url = (
+        _build_collection_public_asset_url(variant_paths["preview"])
+        if preview_exists
+        else None
+    )
+    full_url = (
+        _build_collection_public_asset_url(variant_paths["viewer-full"])
+        if full_exists
+        else None
+    )
+    resolved = (preview_url or full_url, full_url or preview_url)
+    if resolved[0] or resolved[1]:
+        _PUBLIC_VARIANT_URL_CACHE[normalized_path] = resolved
+    return resolved
+
+
+def _generate_public_collection_variants(
+    storage_path: str, content_type: str | None = None
+) -> None:
+    normalized = storage_path.strip().lstrip("/")
+    if not normalized:
+        return
+
+    source_bucket = _maybe_get_collections_bucket()
+    public_bucket = _maybe_get_public_collections_bucket()
+    if source_bucket is None or public_bucket is None:
+        return
+
+    source_blob = source_bucket.blob(normalized)
+    variant_paths = _collection_variant_paths(normalized)
+    destination_blobs = {
+        name: public_bucket.blob(path) for name, path in variant_paths.items()
+    }
+
+    try:
+        if all(blob.exists() for blob in destination_blobs.values()):
+            _PUBLIC_VARIANT_URL_CACHE[normalized] = (
+                _build_collection_public_asset_url(variant_paths["preview"]),
+                _build_collection_public_asset_url(variant_paths["viewer-full"]),
+            )
+            return
+    except Exception:
+        pass
+
+    try:
+        image_bytes = source_blob.download_as_bytes()
+        image = Image.open(io.BytesIO(image_bytes))
+        image = ImageOps.exif_transpose(image)
+    except Exception:
+        return
+
+    variant_sizes = {
+        "thumb": COLLECTIONS_THUMB_MAX_DIMENSION,
+        "preview": COLLECTIONS_PREVIEW_MAX_DIMENSION,
+        "viewer-full": COLLECTIONS_VIEWER_FULL_MAX_DIMENSION,
+    }
+
+    for name, max_dimension in variant_sizes.items():
+        try:
+            converted = image.copy()
+            converted.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+            if converted.mode not in {"RGB", "RGBA"}:
+                converted = converted.convert("RGBA" if "A" in converted.getbands() else "RGB")
+            if converted.mode == "RGBA":
+                background = Image.new("RGBA", converted.size, (255, 255, 255, 0))
+                background.alpha_composite(converted)
+                converted = background
+            else:
+                converted = converted.convert("RGB")
+
+            output = io.BytesIO()
+            converted.save(output, format="WEBP", quality=90, method=6)
+            blob = destination_blobs[name]
+            blob.cache_control = COLLECTIONS_CACHE_CONTROL
+            blob.upload_from_string(output.getvalue(), content_type="image/webp")
+        except Exception:
+            continue
+
+    _PUBLIC_VARIANT_URL_CACHE.pop(normalized, None)
+
+
+def backfill_public_collection_variants_batch(
+    *,
+    limit: int = 25,
+    cursor: str | None = None,
+) -> tuple[int, str | None]:
+    """Generate missing public variants for a small page of collection items."""
+
+    if limit <= 0:
+        return 0, cursor
+
+    source_bucket = _maybe_get_collections_bucket()
+    public_bucket = _maybe_get_public_collections_bucket()
+    if source_bucket is None or public_bucket is None:
+        return 0, None
+
+    sb = get_client()
+    query = (
+        sb.table("collection_items")
+        .select("id,external_id,image_url,created_at")
+        .order("created_at", desc=False)
+        .order("id", desc=False)
+        .limit(limit)
+    )
+    if cursor:
+        query = query.gt("created_at", cursor)
+
+    rows = (query.execute().data) or []
+    if not rows:
+        return 0, None
+
+    processed = 0
+    next_cursor: str | None = cursor
+
+    for row in rows:
+        created_at = row.get("created_at")
+        if isinstance(created_at, datetime):
+            next_cursor = created_at.isoformat()
+        elif created_at:
+            next_cursor = str(created_at)
+
+        storage_path = _normalize_storage_path(
+            _coerce_str(row.get("external_id")) or _coerce_str(row.get("image_url"))
+        )
+        if not storage_path:
+            continue
+
+        preview_url, full_url = _resolve_public_collection_variants(storage_path)
+        if preview_url and full_url:
+            continue
+
+        _generate_public_collection_variants(storage_path)
+        refreshed_preview, refreshed_full = _resolve_public_collection_variants(
+            storage_path
+        )
+        if refreshed_preview or refreshed_full:
+            processed += 1
+
+    if len(rows) < limit:
+        next_cursor = None
+
+    return processed, next_cursor
 
 
 def _normalize_storage_path(value: str | None) -> str | None:
@@ -338,6 +561,25 @@ def _generate_signed_image_url(
         return None
 
 
+def _build_collection_image_url(
+    normalized_path: str | None, *, include_signed: bool
+) -> str | None:
+    """Return a signed original URL when requested, otherwise the stable storage path."""
+
+    if not normalized_path:
+        return None
+
+    if include_signed:
+        signed = _generate_signed_image_url(
+            normalized_path,
+            ttl_seconds=max(60, COLLECTIONS_VIEW_TTL),
+        )
+        if signed:
+            return signed
+
+    return normalized_path
+
+
 def _resolve_collection_image_variants(
     image_url: str | None,
     external_id: str | None,
@@ -371,12 +613,13 @@ def _resolve_collection_image_variants(
     if not normalized:
         return candidate, candidate
 
+    preview_url, full_url = _resolve_public_collection_variants(normalized)
+    if preview_url or full_url:
+        return preview_url or full_url, full_url or preview_url
+
     if include_signed:
-        # Single signing operation; use the same URL for preview and full.
-        signed = _generate_signed_image_url(
-            normalized,
-            ttl_seconds=max(60, COLLECTIONS_VIEW_TTL),
-        )
+        # Secure fallback for originals while derived assets are still missing.
+        signed = _build_collection_image_url(normalized, include_signed=True)
         return signed or normalized, signed or normalized
 
     return normalized, normalized
@@ -785,11 +1028,11 @@ def get_recent_collection_items(
     for item in items:
         storage_path = _normalize_storage_path(item.get("external_id"))
         
-        # Include signed URLs for immediate display
+        # Return signed URLs so the client can render Recent immediately.
         preview_uri, resolved_uri = _resolve_collection_image_variants(
             item.get("image_url"),
             storage_path,
-            include_signed=False, 
+            include_signed=True,
         )
         
         model_id = _coerce_str(item.get("model_id"))
@@ -874,17 +1117,10 @@ def _generate_upload_authorization(
     if request.size:
         headers.setdefault("Content-Length", str(request.size))
 
-    view_url: str | None = None
-    ttl_seconds = int(expiration.total_seconds())
-    try:
-        view_url = generate_signed_read_url_v4(blob, seconds=ttl_seconds)
-    except Exception:
-        view_url = None
-
     return CollectionUploadAuthorization(
         uploadUrl=upload_url,
         storagePath=object_path,
-        publicUrl=view_url or object_path,
+        publicUrl=object_path,
         headers=headers,
         expiresAt=expires_at,
     )
@@ -930,6 +1166,7 @@ def _finalize_collection_objects(
 
             if updates:
                 blob.patch()
+            _generate_public_collection_variants(normalized, content_type)
         except Exception:
             continue
 
