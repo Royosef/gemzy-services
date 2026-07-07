@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import mimetypes
 import os
 from datetime import datetime, timedelta
@@ -47,6 +48,7 @@ from .storage import (
 _COLLECTIONS_BUCKET_CACHE = None
 _PUBLIC_COLLECTIONS_BUCKET_CACHE = None
 _PUBLIC_VARIANT_URL_CACHE: dict[str, tuple[str | None, str | None]] = {}
+logger = logging.getLogger(__name__)
 
 collections_router = APIRouter(prefix="/collections", tags=["collections"])
 models_router = APIRouter(prefix="/models", tags=["models"])
@@ -240,6 +242,14 @@ def _resolve_public_collection_variants(
         preview_exists = preview_blob.exists()
         full_exists = full_blob.exists()
     except Exception:
+        logger.exception(
+            "Failed checking public collection variants",
+            extra={
+                "storage_path": normalized_path,
+                "preview_path": variant_paths["preview"],
+                "full_path": variant_paths["viewer-full"],
+            },
+        )
         preview_exists = False
         full_exists = False
 
@@ -269,6 +279,14 @@ def _generate_public_collection_variants(
     source_bucket = _maybe_get_collections_bucket()
     public_bucket = _maybe_get_public_collections_bucket()
     if source_bucket is None or public_bucket is None:
+        logger.warning(
+            "Skipping public collection variant generation because a bucket is unavailable",
+            extra={
+                "storage_path": normalized,
+                "has_source_bucket": source_bucket is not None,
+                "has_public_bucket": public_bucket is not None,
+            },
+        )
         return
 
     source_blob = source_bucket.blob(normalized)
@@ -285,13 +303,20 @@ def _generate_public_collection_variants(
             )
             return
     except Exception:
-        pass
+        logger.exception(
+            "Failed checking whether destination collection variants already exist",
+            extra={"storage_path": normalized, "variant_paths": variant_paths},
+        )
 
     try:
         image_bytes = source_blob.download_as_bytes()
         image = Image.open(io.BytesIO(image_bytes))
         image = ImageOps.exif_transpose(image)
     except Exception:
+        logger.exception(
+            "Failed downloading or decoding collection source image for variants",
+            extra={"storage_path": normalized},
+        )
         return
 
     variant_sizes = {
@@ -319,6 +344,15 @@ def _generate_public_collection_variants(
             blob.cache_control = COLLECTIONS_CACHE_CONTROL
             blob.upload_from_string(output.getvalue(), content_type="image/webp")
         except Exception:
+            logger.exception(
+                "Failed generating or uploading collection variant",
+                extra={
+                    "storage_path": normalized,
+                    "variant": name,
+                    "destination_path": variant_paths[name],
+                    "max_dimension": max_dimension,
+                },
+            )
             continue
 
     _PUBLIC_VARIANT_URL_CACHE.pop(normalized, None)
@@ -616,6 +650,14 @@ def _resolve_collection_image_variants(
     preview_url, full_url = _resolve_public_collection_variants(normalized)
     if preview_url or full_url:
         return preview_url or full_url, full_url or preview_url
+
+    logger.info(
+        "Public collection variants are missing; falling back",
+        extra={
+            "storage_path": normalized,
+            "include_signed": include_signed,
+        },
+    )
 
     if include_signed:
         # Secure fallback for originals while derived assets are still missing.
@@ -1168,6 +1210,14 @@ def _finalize_collection_objects(
                 blob.patch()
             _generate_public_collection_variants(normalized, content_type)
         except Exception:
+            logger.exception(
+                "Failed finalizing collection object or generating public variants",
+                extra={
+                    "storage_path": normalized,
+                    "content_type": content_type,
+                    "user_id": user_id,
+                },
+            )
             continue
 
 
