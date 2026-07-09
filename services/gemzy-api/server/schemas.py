@@ -198,6 +198,7 @@ class CollectionImage(BaseModel):
     collectionId: str | None = None
     uri: str
     previewUri: str | None = None
+    fullUri: str | None = None
     mediaType: str | None = None
     contentType: str | None = None
     category: str | None = None

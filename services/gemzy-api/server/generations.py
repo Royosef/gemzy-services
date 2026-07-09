@@ -1,6 +1,7 @@
 from __future__ import annotations
 """Generation routing for dispatching create requests to the worker service."""
 
+import asyncio
 import json
 
 import base64
@@ -67,6 +68,7 @@ from .supabase_client import get_client
 router = APIRouter(prefix="/generations", tags=["generations"])
 
 logger = logging.getLogger(__name__)
+_MOTION_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 
 QUALITY_FORWARD_MAP = {
     "1080p": "1k",
@@ -1104,6 +1106,9 @@ async def _persist_motion_result(
             "storagePath": storage_path,
         }
     )
+    if incoming.previewUrl:
+        metadata_payload["previewUrl"] = incoming.previewUrl
+        metadata_payload["previewUri"] = incoming.previewUrl
     if provider_url:
         metadata_payload["providerUrl"] = provider_url
 
@@ -1149,10 +1154,16 @@ async def _persist_motion_result(
         if isinstance(created_at, str)
         else datetime.utcnow().replace(microsecond=0).isoformat()
     )
+    response_preview_url = (
+        incoming.previewUrl
+        or _coerce_str(metadata_payload.get("previewUrl"))
+        or preview_url
+        or view_url
+    )
 
     return GenerationResultPayload(
         url=view_url,
-        previewUrl=preview_url or view_url,
+        previewUrl=response_preview_url,
         mediaType="video",
         contentType=normalized_content_type,
         storagePath=storage_path,
@@ -1277,6 +1288,8 @@ def _motion_result_metadata(
         "aspectRatio": payload.aspectRatio,
         "contentType": MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
         "mediaType": "video",
+        "previewUrl": payload.firstFrameUrl,
+        "previewUri": payload.firstFrameUrl,
     }
 
 
@@ -1299,6 +1312,7 @@ def _load_demo_motion_result(
     encoded = base64.b64encode(video_bytes).decode("ascii")
     return GenerationResultPayload(
         url=f"data:{MOTION_DEFAULT_VIDEO_CONTENT_TYPE};base64,{encoded}",
+        previewUrl=payload.firstFrameUrl,
         mediaType="video",
         contentType=MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
         metadata=_motion_result_metadata(payload, provider="demo", source="local-demo"),
@@ -1455,30 +1469,85 @@ async def _request_seedance_motion(
             )
         return GenerationResultPayload(
             url=url,
+            previewUrl=payload.firstFrameUrl,
             mediaType="video",
             contentType=MOTION_DEFAULT_VIDEO_CONTENT_TYPE,
-            metadata={
-                "provider": "segmind",
-                "model": "seedance-2.0",
-                "duration": payload.duration,
-                "resolution": payload.resolution,
-                "aspectRatio": payload.aspectRatio,
-            },
+            metadata=_motion_result_metadata(
+                payload, provider="segmind", source="remote-url"
+            ),
         )
 
     encoded = base64.b64encode(response.content).decode("ascii")
     return GenerationResultPayload(
         url=f"data:{content_type};base64,{encoded}",
+        previewUrl=payload.firstFrameUrl,
         mediaType="video",
         contentType=content_type.split(";", 1)[0],
-        metadata={
-            "provider": "segmind",
-            "model": "seedance-2.0",
-            "duration": payload.duration,
-            "resolution": payload.resolution,
-            "aspectRatio": payload.aspectRatio,
-        },
+        metadata=_motion_result_metadata(
+            payload, provider="segmind", source="inline-video"
+        ),
     )
+
+
+async def _run_motion_generation_job(
+    job: GenerationJob,
+    *,
+    payload: CreateMotionGenerationPayload,
+    user_id: str,
+    required_credits: int,
+) -> None:
+    mark_started(job)
+    try:
+        for index in range(payload.videoCount):
+            provider_result = await _request_seedance_motion(payload, look_index=index)
+            result = await _persist_motion_result(job, provider_result)
+            add_result(job, result)
+            update_progress(
+                job,
+                (index + 1) / payload.videoCount,
+                index + 1,
+            )
+        mark_completed(job)
+        try:
+            _publish_generation_completed_notification(job)
+        except Exception:
+            logger.exception(
+                "Failed to publish completion notification for motion job %s", job.id
+            )
+    except Exception:
+        try:
+            _adjust_profile_credits(user_id, required_credits)
+        except Exception:
+            logger.exception(
+                "Failed to refund credits for user %s after motion failure", user_id
+            )
+        mark_failed(job, MOTION_START_FAILURE_MESSAGE)
+        try:
+            _publish_generation_failed_notification(job)
+        except Exception:
+            logger.exception(
+                "Failed to publish failure notification for motion job %s", job.id
+            )
+        logger.exception("Motion generation job %s failed", job.id)
+
+
+def _schedule_motion_generation_job(
+    job: GenerationJob,
+    *,
+    payload: CreateMotionGenerationPayload,
+    user_id: str,
+    required_credits: int,
+) -> None:
+    task = asyncio.create_task(
+        _run_motion_generation_job(
+            job,
+            payload=payload,
+            user_id=user_id,
+            required_credits=required_credits,
+        )
+    )
+    _MOTION_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_MOTION_BACKGROUND_TASKS.discard)
 
 
 @router.get("/config")
@@ -1907,27 +1976,12 @@ async def create_motion_generation(
         job_type="motion",
     )
 
-    mark_started(job)
-    try:
-        for index in range(payload.videoCount):
-            provider_result = await _request_seedance_motion(payload, look_index=index)
-            result = await _persist_motion_result(job, provider_result)
-            add_result(job, result)
-            update_progress(
-                job,
-                (index + 1) / payload.videoCount,
-                index + 1,
-            )
-        mark_completed(job)
-    except Exception:
-        try:
-            _adjust_profile_credits(user.id, required_credits)
-        except Exception:
-            logger.exception(
-                "Failed to refund credits for user %s after motion failure", user.id
-            )
-        mark_failed(job, MOTION_START_FAILURE_MESSAGE)
-        raise
+    _schedule_motion_generation_job(
+        job,
+        payload=payload,
+        user_id=user.id,
+        required_credits=required_credits,
+    )
 
     job_state = to_response(job)
     job_state["remainingCredits"] = new_credits

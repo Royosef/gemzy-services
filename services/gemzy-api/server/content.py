@@ -376,7 +376,7 @@ def backfill_public_collection_variants_batch(
     sb = get_client()
     query = (
         sb.table("collection_items")
-        .select("id,external_id,image_url,created_at")
+        .select("id,collection_id,user_id,external_id,image_url,metadata,created_at")
         .order("created_at", desc=False)
         .order("id", desc=False)
         .limit(limit)
@@ -398,10 +398,19 @@ def backfill_public_collection_variants_batch(
         elif created_at:
             next_cursor = str(created_at)
 
-        storage_path = _normalize_storage_path(
-            _coerce_str(row.get("external_id")) or _coerce_str(row.get("image_url"))
+        storage_path = _select_collection_storage_path(
+            _coerce_str(row.get("external_id")),
+            _coerce_str(row.get("image_url")),
         )
         if not storage_path:
+            continue
+        if _infer_collection_media_type(
+            _coerce_str(row.get("image_url")),
+            storage_path,
+            row.get("metadata") if isinstance(row.get("metadata"), Mapping) else None,
+        ) == "video":
+            if _backfill_collection_video_preview_metadata(row):
+                processed += 1
             continue
 
         preview_url, full_url = _resolve_public_collection_variants(storage_path)
@@ -419,6 +428,97 @@ def backfill_public_collection_variants_batch(
         next_cursor = None
 
     return processed, next_cursor
+
+
+def _backfill_collection_video_preview_metadata(row: Mapping[str, Any]) -> bool:
+    """Best-effort backfill for older persisted video items missing poster metadata."""
+
+    item_id = _coerce_str(row.get("id"))
+    if not item_id:
+        return False
+
+    existing_metadata = row.get("metadata")
+    metadata = (
+        dict(existing_metadata)
+        if isinstance(existing_metadata, Mapping)
+        else {}
+    )
+    if _extract_collection_video_preview_candidate(metadata):
+        return False
+
+    source = _find_collection_video_preview_source(row)
+    if not source:
+        return False
+
+    metadata["previewUrl"] = source
+    metadata["previewUri"] = source
+    metadata.setdefault("previewBackfilled", True)
+
+    get_client().table("collection_items").update({"metadata": metadata}).eq(
+        "id", item_id
+    ).execute()
+    return True
+
+
+def _find_collection_video_preview_source(row: Mapping[str, Any]) -> str | None:
+    """Resolve a stable poster candidate for a persisted video item when possible."""
+
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else None
+    existing = _extract_collection_video_preview_candidate(metadata)
+    if existing:
+        return existing
+
+    source = _coerce_str(metadata.get("source")) if metadata else None
+    if source != "motion":
+        return None
+
+    collection_id = _coerce_str(row.get("collection_id"))
+    user_id = _coerce_str(row.get("user_id"))
+    item_id = _coerce_str(row.get("id"))
+    if not collection_id or not user_id:
+        return None
+
+    related_rows = (
+        get_client()
+        .table("collection_items")
+        .select("id,external_id,image_url,metadata,created_at")
+        .eq("collection_id", collection_id)
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(25)
+        .execute()
+        .data
+        or []
+    )
+
+    for candidate in related_rows:
+        if _coerce_str(candidate.get("id")) == item_id:
+            continue
+        candidate_metadata = (
+            candidate.get("metadata")
+            if isinstance(candidate.get("metadata"), Mapping)
+            else None
+        )
+        candidate_external_id = _coerce_str(candidate.get("external_id"))
+        candidate_image_url = _coerce_str(candidate.get("image_url"))
+        candidate_storage_path = _select_collection_storage_path(
+            candidate_external_id,
+            candidate_image_url,
+        )
+        if not candidate_storage_path:
+            continue
+        if (
+            _infer_collection_media_type(
+                candidate_image_url,
+                candidate_external_id,
+                candidate_metadata,
+            )
+            == "video"
+        ):
+            continue
+        return candidate_storage_path
+
+    return None
 
 
 def _normalize_storage_path(value: str | None) -> str | None:
@@ -448,6 +548,27 @@ def _normalize_storage_path(value: str | None) -> str | None:
     return trimmed or None
 
 
+def _looks_like_collection_storage_path(value: str | None) -> bool:
+    normalized = (value or "").strip().lstrip("/")
+    return "/" in normalized
+
+
+def _select_collection_storage_path(
+    external_id: str | None,
+    image_url: str | None,
+) -> str | None:
+    """Prefer a real object key over legacy UUID-like external ids."""
+
+    normalized_external = _normalize_storage_path(external_id)
+    normalized_image = _normalize_storage_path(image_url)
+
+    if _looks_like_collection_storage_path(normalized_external):
+        return normalized_external
+    if _looks_like_collection_storage_path(normalized_image):
+        return normalized_image
+    return normalized_external or normalized_image
+
+
 def _has_public_scheme(uri: str) -> bool:
     """Return True when the URI uses an already public scheme."""
 
@@ -457,6 +578,40 @@ def _has_public_scheme(uri: str) -> bool:
         or normalized.startswith("https://")
         or normalized.startswith("data:")
     )
+
+
+def _is_video_content_type(value: str | None) -> bool:
+    return isinstance(value, str) and value.lower().startswith("video/")
+
+
+def _has_video_extension(value: str | None) -> bool:
+    normalized = (value or "").split("?", 1)[0].split("#", 1)[0].lower()
+    return normalized.endswith((".mp4", ".mov", ".m4v", ".webm"))
+
+
+def _infer_collection_media_type(
+    image_url: str | None,
+    external_id: str | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> str:
+    if isinstance(metadata, Mapping):
+        media_type = _coerce_str(
+            metadata.get("mediaType") or metadata.get("media_type")
+        )
+        if media_type == "video":
+            return "video"
+
+        content_type = _coerce_str(
+            metadata.get("contentType") or metadata.get("content_type")
+        )
+        if _is_video_content_type(content_type):
+            return "video"
+
+    for candidate in (external_id, image_url):
+        if _has_video_extension(candidate):
+            return "video"
+
+    return "image"
 
 
 def _resolve_incoming_image_uri(uri: str, storage_path: str | None) -> str:
@@ -576,6 +731,29 @@ def _collection_item_media_fields(metadata: Mapping[str, Any] | None) -> dict[st
         fields["contentType"] = content_type
     return fields
 
+
+def _extract_collection_video_preview_candidate(
+    metadata: Mapping[str, Any] | None,
+) -> str | None:
+    """Return a stored poster/thumbnail candidate for a video collection item."""
+
+    if not isinstance(metadata, Mapping):
+        return None
+
+    for key in (
+        "previewUri",
+        "previewUrl",
+        "thumbnail",
+        "thumbnailUrl",
+        "poster",
+        "posterUrl",
+    ):
+        candidate = _coerce_str(metadata.get(key))
+        if candidate:
+            return candidate
+
+    return None
+
 def _generate_signed_image_url(
     normalized_path: str, *, ttl_seconds: int | None = None
 ) -> str | None:
@@ -619,6 +797,7 @@ def _resolve_collection_image_variants(
     external_id: str | None,
     *,
     include_signed: bool = False,
+    metadata: Mapping[str, Any] | None = None,
 ) -> tuple[str | None, str | None]:
     """
     Return (preview, full) URLs for a stored collection image.
@@ -646,6 +825,21 @@ def _resolve_collection_image_variants(
     normalized = _normalize_storage_path(candidate)
     if not normalized:
         return candidate, candidate
+
+    if _infer_collection_media_type(image_url, external_id, metadata) == "video":
+        preview_candidate = _extract_collection_video_preview_candidate(metadata)
+        preview_uri: str | None = None
+        if preview_candidate and preview_candidate != normalized:
+            preview_uri, _ = _resolve_collection_image_variants(
+                preview_candidate,
+                preview_candidate,
+                include_signed=include_signed,
+                metadata={"mediaType": "image"},
+            )
+        if include_signed:
+            signed = _build_collection_image_url(normalized, include_signed=True)
+            return preview_uri, signed or normalized
+        return preview_uri, normalized
 
     preview_url, full_url = _resolve_public_collection_variants(normalized)
     if preview_url or full_url:
@@ -839,11 +1033,15 @@ def _map_collections(
         if not collection_id:
             continue
 
-        storage_path = _normalize_storage_path(item.get("external_id"))
+        storage_path = _select_collection_storage_path(
+            _coerce_str(item.get("external_id")),
+            _coerce_str(item.get("image_url")),
+        )
         preview_uri, resolved_uri = _resolve_collection_image_variants(
             item.get("image_url"),
             storage_path,
             include_signed=True,
+            metadata=item.get("metadata"),
         )
 
         model_id = _coerce_str(item.get("model_id"))
@@ -856,8 +1054,9 @@ def _map_collections(
         collection_item = CollectionImage(
             id=item.get("external_id") or item.get("id"),
             collectionId=collection_id,
-            uri=resolved_uri,
+            uri=preview_uri or resolved_uri,
             previewUri=preview_uri,
+            fullUri=resolved_uri,
             category=item.get("category"),
             isNew=bool(item.get("is_new")),
             isFavorite=bool(item.get("is_favorite")),
@@ -897,6 +1096,33 @@ def _map_collections(
 
         lead_model_payload: dict[str, Any] | None = None
         if sorted_items:
+            cover_item = sorted_items[0][1]
+            cover_item_preview = (
+                getattr(cover_item, "previewUri", None)
+                or getattr(cover_item, "uri", None)
+                or getattr(cover_item, "fullUri", None)
+            )
+            cover_item_full = (
+                getattr(cover_item, "fullUri", None) or getattr(cover_item, "uri", None)
+            )
+            cover_item_media_type = _coerce_str(getattr(cover_item, "mediaType", None))
+            cover_item_content_type = _coerce_str(
+                getattr(cover_item, "contentType", None)
+            )
+            cover_item_is_video = cover_item_media_type == "video" or (
+                isinstance(cover_item_content_type, str)
+                and cover_item_content_type.lower().startswith("video/")
+            )
+
+            if cover_item_is_video and cover_item_preview:
+                cover_preview = cover_item_preview
+                cover_url = cover_item_preview
+            else:
+                if not cover_preview and cover_item_preview:
+                    cover_preview = cover_item_preview
+                if not cover_url and cover_item_full:
+                    cover_url = cover_item_full
+
             lead_counts: dict[str, dict[str, Any]] = {}
             for index, (_created_at, image) in enumerate(sorted_items):
                 candidate_id = getattr(image, "modelId", None) or None
@@ -1068,13 +1294,17 @@ def get_recent_collection_items(
     mapped: list[CollectionImage] = []
     
     for item in items:
-        storage_path = _normalize_storage_path(item.get("external_id"))
+        storage_path = _select_collection_storage_path(
+            _coerce_str(item.get("external_id")),
+            _coerce_str(item.get("image_url")),
+        )
         
         # Return signed URLs so the client can render Recent immediately.
         preview_uri, resolved_uri = _resolve_collection_image_variants(
             item.get("image_url"),
             storage_path,
             include_signed=True,
+            metadata=item.get("metadata"),
         )
         
         model_id = _coerce_str(item.get("model_id"))
@@ -1088,8 +1318,9 @@ def get_recent_collection_items(
             CollectionImage(
                 id=item.get("external_id") or item.get("id"),
                 collectionId=item.get("collection_id"),
-                uri=resolved_uri,
+                uri=preview_uri or resolved_uri,
                 previewUri=preview_uri,
+                fullUri=resolved_uri,
                 category=item.get("category"),
                 isNew=bool(item.get("is_new")),
                 isFavorite=bool(item.get("is_favorite")),
@@ -1208,7 +1439,13 @@ def _finalize_collection_objects(
 
             if updates:
                 blob.patch()
-            _generate_public_collection_variants(normalized, content_type)
+            if _is_video_content_type(content_type) or _has_video_extension(normalized):
+                logger.info(
+                    "Skipping image variant generation for collection video object",
+                    extra={"storage_path": normalized, "content_type": content_type},
+                )
+            else:
+                _generate_public_collection_variants(normalized, content_type)
         except Exception:
             logger.exception(
                 "Failed finalizing collection object or generating public variants",
@@ -1562,12 +1799,16 @@ def list_collection_items(
     for row in page_rows:
         raw_external_id = row.get("external_id")
         # Normalized storage path for client usage and signing
-        storage_path = _normalize_storage_path(raw_external_id)
+        storage_path = _select_collection_storage_path(
+            _coerce_str(raw_external_id),
+            _coerce_str(row.get("image_url")),
+        )
 
         preview_uri, resolved_uri = _resolve_collection_image_variants(
             row.get("image_url"),
             storage_path,
             include_signed=includeSigned,
+            metadata=row.get("metadata"),
         )
 
         model_id = _coerce_str(row.get("model_id"))
@@ -1577,8 +1818,9 @@ def list_collection_items(
             CollectionImage(
                 id=raw_external_id or row.get("id"),
                 collectionId=collection_id,
-                uri=resolved_uri or "",
+                uri=preview_uri or resolved_uri or "",
                 previewUri=preview_uri,
+                fullUri=resolved_uri,
                 category=row.get("category"),
                 isNew=bool(row.get("is_new")),
                 isFavorite=bool(row.get("is_favorite")),

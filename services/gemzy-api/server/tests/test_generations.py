@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1206,7 +1207,7 @@ DEMO_MOTION_VIDEO_PATH = Path("C:/gemzy/assets/create-menu/motion.mp4")
 def test_motion_generation_demo_video_uploads_to_storage_and_db(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The motion route should store demo MP4 bytes and return a signed URL."""
+    """The motion route should queue quickly and eventually store the demo MP4."""
 
     inserted_payloads: list[dict[str, Any]] = []
     uploaded: list[dict[str, Any]] = []
@@ -1313,12 +1314,26 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["status"] in {"queued", "in_progress", "completed"}
     assert body["remainingCredits"] == 16
     assert body["totalLooks"] == 1
-    assert body["completedLooks"] == 1
+    job_id = body["id"]
 
-    result = body["results"][0]
+    completed_body = body
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        poll_response = test_client.get(f"/generations/{job_id}")
+        assert poll_response.status_code == 200
+        completed_body = poll_response.json()
+        if completed_body["status"] == "completed":
+            break
+        assert completed_body["status"] != "failed"
+        time.sleep(0.05)
+
+    assert completed_body["status"] == "completed"
+    assert completed_body["completedLooks"] == 1
+
+    result = completed_body["results"][0]
     assert result["url"].startswith("https://signed.example/user-123/motion/")
     assert not result["url"].startswith("data:")
     assert result["mediaType"] == "video"
@@ -1326,9 +1341,11 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
     assert result["storagePath"].startswith("user-123/motion/")
     assert result["collectionId"] == "draft-1"
     assert result["collectionItemId"] == "motion-item-1"
+    assert result["previewUrl"] == "https://cdn.example/source.png"
     assert result["metadata"]["source"] == "motion"
     assert result["metadata"]["mediaType"] == "video"
     assert result["metadata"]["provider"] == "demo"
+    assert result["metadata"]["previewUrl"] == "https://cdn.example/source.png"
 
     assert len(uploaded) == 1
     assert uploaded[0]["name"] == result["storagePath"]
@@ -1344,9 +1361,48 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
     assert inserted["external_id"] == result["storagePath"]
     assert inserted["image_url"] == result["storagePath"]
     assert inserted["metadata"]["contentType"] == "video/mp4"
+    assert inserted["metadata"]["previewUrl"] == "https://cdn.example/source.png"
+    assert inserted["metadata"]["previewUri"] == "https://cdn.example/source.png"
     assert inserted["metadata"]["size"] == DEMO_MOTION_VIDEO_PATH.stat().st_size
     assert inserted["metadata"]["taskType"] == "motion"
     assert credit_client.credits["user-123"] == 16
+
+
+def test_motion_generation_returns_immediately_with_queued_job(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+) -> None:
+    scheduled: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        generations,
+        "_schedule_motion_generation_job",
+        lambda job, **kwargs: scheduled.append({"job": job, **kwargs}),
+    )
+
+    response = client.post(
+        "/generations/motion",
+        json={
+            "prompt": "slow editorial camera push",
+            "firstFrameUrl": "https://cdn.example/source.png",
+            "duration": 8,
+            "resolution": "720p",
+            "aspectRatio": "9:16",
+            "videoCount": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["results"] == []
+    assert body["completedLooks"] == 0
+    assert body["totalLooks"] == 2
+    assert body["remainingCredits"] == 12
+    assert len(scheduled) == 1
+    assert scheduled[0]["job"].id == body["id"]
+    assert scheduled[0]["job"].total_looks == 2
+    assert scheduled[0]["required_credits"] == 8
 
 def test_persist_generation_result_refreshes_draft_cover(
     monkeypatch: pytest.MonkeyPatch,

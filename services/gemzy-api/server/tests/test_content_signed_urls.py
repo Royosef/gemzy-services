@@ -42,6 +42,7 @@ class _StubTable:
         self._filters: list[tuple[str, Any]] = []
         self._gt_filters: list[tuple[str, Any]] = []
         self._limit: int | None = None
+        self._update_payload: dict[str, Any] | None = None
 
     def select(self, *_args: Any, **_kwargs: Any) -> _StubTable:
         return self
@@ -66,12 +67,20 @@ class _StubTable:
         self._gt_filters.append((key, value))
         return self
 
+    def update(self, payload: dict[str, Any]) -> _StubTable:
+        self._update_payload = payload
+        return self
+
     def execute(self) -> SimpleNamespace:
         rows = self._data
         for key, value in self._filters:
             rows = [row for row in rows if row.get(key) == value]
         for key, value in self._gt_filters:
             rows = [row for row in rows if row.get(key) and row.get(key) > value]
+        if self._update_payload is not None:
+            for row in rows:
+                row.update(self._update_payload)
+            return SimpleNamespace(data=rows)
         if self._limit is not None:
             rows = rows[: self._limit]
         return SimpleNamespace(data=rows)
@@ -312,6 +321,39 @@ def test_resolve_collection_image_variants_prefers_public_variants(
     assert full == "https://public.example/viewer-full.webp"
 
 
+def test_resolve_collection_image_variants_treats_videos_as_direct_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        content,
+        "_resolve_public_collection_variants",
+        lambda _path: pytest.fail("video should not use image public variants"),
+    )
+    monkeypatch.setattr(
+        content,
+        "_build_collection_image_url",
+        lambda normalized_path, include_signed: (
+            f"https://signed.example/{normalized_path}"
+            if include_signed
+            else normalized_path
+        ),
+    )
+
+    preview, full = content._resolve_collection_image_variants(
+        "user-123/items/clip.mp4",
+        "user-123/items/clip.mp4",
+        include_signed=True,
+        metadata={
+            "mediaType": "video",
+            "contentType": "video/mp4",
+            "previewUrl": "https://public.example/video-poster.webp",
+        },
+    )
+
+    assert preview == "https://public.example/video-poster.webp"
+    assert full == "https://signed.example/user-123/items/clip.mp4"
+
+
 def test_generate_upload_authorization_returns_stable_storage_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -372,8 +414,9 @@ def test_recent_collection_items_return_public_variant_urls(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload[0]["uri"] == "https://public.example/viewer-full.webp"
+    assert payload[0]["uri"] == "https://public.example/preview.webp"
     assert payload[0]["previewUri"] == "https://public.example/preview.webp"
+    assert payload[0]["fullUri"] == "https://public.example/viewer-full.webp"
 
 
 def test_backfill_public_collection_variants_batch_generates_missing_assets(
@@ -472,6 +515,147 @@ def test_backfill_public_collection_variants_batch_honors_cursor(
 
     assert processed == 0
     assert next_cursor == "2026-01-02T00:00:00"
+
+
+def test_backfill_public_collection_variants_batch_backfills_motion_video_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {
+            "id": "img-1",
+            "collection_id": "draft-1",
+            "user_id": "user-123",
+            "external_id": "user-123/items/source-image.png",
+            "image_url": "user-123/items/source-image.png",
+            "metadata": {"mediaType": "image", "contentType": "image/png"},
+            "created_at": "2026-01-01T00:00:00",
+        },
+        {
+            "id": "video-1",
+            "collection_id": "draft-1",
+            "user_id": "user-123",
+            "external_id": "user-123/motion/clip.mp4",
+            "image_url": "user-123/motion/clip.mp4",
+            "metadata": {
+                "mediaType": "video",
+                "contentType": "video/mp4",
+                "source": "motion",
+            },
+            "created_at": "2026-01-02T00:00:00",
+        },
+    ]
+
+    monkeypatch.setattr(content, "get_client", lambda: _StubClient(rows))
+    monkeypatch.setattr(content, "_maybe_get_collections_bucket", lambda: object())
+    monkeypatch.setattr(
+        content, "_maybe_get_public_collections_bucket", lambda: object()
+    )
+    monkeypatch.setattr(
+        content,
+        "_resolve_public_collection_variants",
+        lambda _path: (
+            "https://public.example/preview.webp",
+            "https://public.example/full.webp",
+        ),
+    )
+    monkeypatch.setattr(
+        content,
+        "_generate_public_collection_variants",
+        lambda *_args, **_kwargs: pytest.fail("video backfill should not generate image variants"),
+    )
+
+    processed, next_cursor = content.backfill_public_collection_variants_batch(limit=10)
+
+    assert processed == 1
+    assert next_cursor is None
+    assert rows[1]["metadata"]["previewUrl"] == "user-123/items/source-image.png"
+    assert rows[1]["metadata"]["previewUri"] == "user-123/items/source-image.png"
+
+
+def test_backfill_public_collection_variants_batch_prefers_real_storage_path_over_legacy_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {
+            "id": "item-1",
+            "collection_id": "draft-1",
+            "user_id": "user-123",
+            "external_id": "fa87192bbdea4ee1853c9a72865739e1",
+            "image_url": "user-123/items/real-source.png",
+            "metadata": {"mediaType": "image", "contentType": "image/png"},
+            "created_at": "2026-01-01T00:00:00",
+        }
+    ]
+    generated: list[str] = []
+
+    monkeypatch.setattr(content, "get_client", lambda: _StubClient(rows))
+    monkeypatch.setattr(content, "_maybe_get_collections_bucket", lambda: object())
+    monkeypatch.setattr(
+        content, "_maybe_get_public_collections_bucket", lambda: object()
+    )
+
+    def fake_resolve(path: str) -> tuple[str | None, str | None]:
+        if path in generated:
+            return (
+                "https://public.example/generated-preview.webp",
+                "https://public.example/generated-full.webp",
+            )
+        return None, None
+
+    monkeypatch.setattr(content, "_resolve_public_collection_variants", fake_resolve)
+    monkeypatch.setattr(
+        content,
+        "_generate_public_collection_variants",
+        lambda path, content_type=None: generated.append(path),
+    )
+
+    processed, next_cursor = content.backfill_public_collection_variants_batch(limit=10)
+
+    assert processed == 1
+    assert next_cursor is None
+    assert generated == ["user-123/items/real-source.png"]
+
+
+def test_finalize_collection_objects_skips_image_variants_for_videos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FinalizeBlob:
+        metadata: dict[str, Any] | None
+        content_type: str | None
+        cache_control: str | None
+
+        def __init__(self) -> None:
+            self.metadata = {}
+            self.content_type = None
+            self.cache_control = None
+            self.patch_called = False
+
+        def patch(self) -> None:
+            self.patch_called = True
+
+    class _FinalizeBucket:
+        def __init__(self) -> None:
+            self._blob = _FinalizeBlob()
+
+        def blob(self, _path: str) -> _FinalizeBlob:
+            return self._blob
+
+    bucket = _FinalizeBucket()
+    generated: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(content, "_maybe_get_collections_bucket", lambda: bucket)
+    monkeypatch.setattr(
+        content,
+        "_generate_public_collection_variants",
+        lambda path, content_type=None: generated.append((path, content_type)),
+    )
+
+    content._finalize_collection_objects(
+        [("user-123/items/clip.mp4", "video/mp4", "user-123")]
+    )
+
+    assert bucket._blob.patch_called is True
+    assert generated == []
 
 
 def test_ensure_unsaved_collection_creates_deterministic_draft_id(
