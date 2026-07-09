@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
 import pytest
+from supabase_auth.errors import AuthApiError
 
 import sys
 
@@ -34,9 +35,15 @@ class _FakeAuth:
     def __init__(self, users: list[dict[str, Any]] | None = None, *, raise_error: bool = False):
         self.admin = _FakeAdmin(users, raise_error=raise_error)
         self.otp_calls: list[dict[str, str]] = []
+        self.password_sign_in_error: Exception | None = None
 
     def sign_in_with_otp(self, payload: dict[str, str]) -> None:
         self.otp_calls.append(payload)
+
+    def sign_in_with_password(self, credentials: dict[str, str]) -> SimpleNamespace:
+        if self.password_sign_in_error is not None:
+            raise self.password_sign_in_error
+        return SimpleNamespace(user=SimpleNamespace(id=auth.TEST_LOGIN_USER_ID), session=SimpleNamespace())
 
 
 class _FakeTable:
@@ -143,3 +150,29 @@ def test_verify_magic_link_blocks_unknown_email(
 
     response = app.post("/auth/verify", json={"email": "new@example.com", "token": "123456"})
     assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_verify_magic_link_returns_401_for_invalid_test_login_password(
+    monkeypatch: pytest.MonkeyPatch, app: TestClient
+) -> None:
+    service_client = _FakeClient()
+    user_client = _FakeClient()
+    user_client.auth.password_sign_in_error = AuthApiError(
+        {
+            "message": "Invalid login credentials",
+            "status": 400,
+            "code": "invalid_credentials",
+        }
+    )
+    monkeypatch.setattr(auth, "get_service_role_client", lambda fresh=False: service_client)
+    monkeypatch.setattr(auth, "create_user_client", lambda: user_client)
+
+    response = app.post(
+        "/auth/verify",
+        json={"email": auth.TEST_LOGIN_EMAIL, "token": auth.TEST_LOGIN_CODE},
+    )
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert response.json() == {
+        "detail": "Test login is misconfigured: invalid test account credentials"
+    }

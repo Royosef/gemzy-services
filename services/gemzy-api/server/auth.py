@@ -32,6 +32,7 @@ from google.oauth2 import id_token as google_id_token
 from fastapi.responses import RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from postgrest.exceptions import APIError
+from supabase_auth.errors import AuthApiError
 from urllib.parse import quote, unquote
 from pydantic import BaseModel, Field
 
@@ -80,7 +81,7 @@ INVALID_REFRESH_ERROR_HINTS = (
 TEST_LOGIN_USER_ID = "286b4672-8f6e-44cc-945f-7a3d113c50b2"
 TEST_LOGIN_EMAIL = "testgemzy@gemzy.co"
 TEST_LOGIN_CODE = "123455"
-TEST_LOGIN_PASSWORD = "3cb2baca4d"
+TEST_LOGIN_PASSWORD = os.getenv("TEST_LOGIN_PASSWORD", "3cb2baca4d")
 
 GCS_PROJECT = os.getenv("GCS_PROJECT")
 AVATAR_BUCKET = os.getenv("GCS_AVATARS_BUCKET") or os.getenv(
@@ -548,6 +549,12 @@ def send_magic_link(request: Request, data: MagicLinkRequest) -> dict:
     sb = create_user_client()
     try:
         sb.auth.sign_in_with_otp({"email": data.email})
+    except AuthApiError as exc:
+        status_code = getattr(exc, "status", None) or status.HTTP_400_BAD_REQUEST
+        detail = str(exc)
+        if status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+            detail = "Too many login attempts. Please wait a bit before requesting another code."
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     except Exception as exc:  # pragma: no cover - network failure
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
@@ -563,9 +570,15 @@ def verify_magic_link(request: Request, data: VerifyRequest) -> AuthResponse:
     otp_client = create_user_client()
 
     if _normalize_email(data.email) == TEST_LOGIN_EMAIL and data.token == TEST_LOGIN_CODE:
-        res = otp_client.auth.sign_in_with_password(
-            credentials={"email": TEST_LOGIN_EMAIL, "password": TEST_LOGIN_PASSWORD}
-        )
+        try:
+            res = otp_client.auth.sign_in_with_password(
+                credentials={"email": TEST_LOGIN_EMAIL, "password": TEST_LOGIN_PASSWORD}
+            )
+        except AuthApiError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Test login is misconfigured: invalid test account credentials",
+            ) from exc
 
         # Add 20 credits to the test user
         admin_client = get_service_role_client(fresh=True)
