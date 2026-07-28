@@ -25,6 +25,10 @@ def _slugify_label(value: str) -> str:
     return normalized.strip("-")
 
 
+def _slugify(val: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(val or "").strip().lower())
+
+
 def _normalize_definition_option_label(option_key: str, option_definition: Any, selected: str) -> str | None:
     candidate = str(selected or "").strip()
     if not candidate:
@@ -38,7 +42,11 @@ def _normalize_definition_option_label(option_key: str, option_definition: Any, 
     else:
         option_id = _slugify_label(label)
 
-    if candidate in {label, option_id}:
+    candidate_slug = _slugify(candidate)
+    if (
+        candidate_slug == _slugify(label)
+        or (option_id and candidate_slug == _slugify(option_id))
+    ):
         return label
     return None
 

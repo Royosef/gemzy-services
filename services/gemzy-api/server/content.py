@@ -14,7 +14,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from PIL import Image, ImageOps
 
-from .auth import get_current_user
+from .auth import get_current_user, get_optional_current_user
 from .schemas import (
     AddCollectionItemsPayload,
     Collection,
@@ -1958,11 +1958,6 @@ def create_collection_endpoint(
         )
 
     prepared = _prepare_collection_images(payload.images, current.id)
-    if not prepared:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one image is required",
-        )
 
     collection_id = uuid4().hex
     timestamp = datetime.utcnow().isoformat()
@@ -2387,11 +2382,14 @@ def _fetch_models(
 @models_router.get("/", response_model=list[Model])
 def list_models(
     includeGallery: bool = True,  # noqa: N803 - API casing
-    current: UserState = Depends(get_current_user),
+    current: UserState | None = Depends(get_optional_current_user),
 ) -> list[Model]:
     """Return the available Gemzy models."""
 
-    return _fetch_models(user_id=current.id, include_gallery=includeGallery)
+    return _fetch_models(
+        user_id=current.id if current else None,
+        include_gallery=includeGallery,
+    )
 
 
 @models_router.get("/{model_id}", response_model=Model)

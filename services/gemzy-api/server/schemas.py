@@ -555,10 +555,16 @@ class CreateGenerationResponse(BaseModel):
     editModeTrialEditsRemaining: int | None = Field(default=None, ge=0, le=2)
 
 
+class CancelGenerationPayload(BaseModel):
+    """User-requested cancellation for queued generation slots."""
+
+    looks: int = Field(default=1, ge=1)
+
+
 class GenerationJobEvent(BaseModel):
     """Event payload sent from the generation server to report updates."""
 
-    type: Literal["started", "progress", "result", "completed", "failed"]
+    type: Literal["started", "progress", "result", "completed", "failed", "cancelled", "canceled"]
     result: GenerationResultPayload | None = None
     progress: float | None = Field(default=None, ge=0.0, le=1.0)
     completedLooks: int | None = Field(default=None, ge=0)

@@ -64,6 +64,7 @@ from .rate_limit import limiter, LIMIT_auth_send, LIMIT_auth_verify, LIMIT_oauth
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth_router = APIRouter(prefix="/oauth", tags=["oauth"])
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 nonce_store: dict[str, str] = {}
 logger = logging.getLogger(__name__)
@@ -946,6 +947,16 @@ def get_current_user(
         created_at=_auth_user_created_at(res.user),
         auth_user=res.user,
     )
+
+
+def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+) -> UserState | None:
+    """Return the current user when a bearer token is present."""
+    if credentials is None:
+        return None
+
+    return get_current_user(credentials)
 
 
 @router.get("/me", response_model=UserState)

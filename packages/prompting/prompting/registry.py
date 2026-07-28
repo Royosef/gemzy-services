@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from functools import lru_cache
 from typing import Any, Iterable
@@ -171,10 +172,16 @@ def _iter_option_entries(option_map: dict[str, Any]) -> Iterable[dict[str, Any]]
             }
 
 
+def _slugify(val: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(val or "").strip().lower())
+
+
 def _resolve_option_selection(option_map: dict[str, Any], selected: str | None) -> dict[str, Any] | None:
     candidate = str(selected or "").strip()
     if not candidate:
         return None
+
+    # Try exact match first
     if candidate in option_map:
         option_entry = option_map[candidate]
         if isinstance(option_entry, dict):
@@ -190,9 +197,33 @@ def _resolve_option_selection(option_map: dict[str, Any], selected: str | None) 
             "prompt": str(option_entry or ""),
             "raw": option_entry,
         }
+
+    # Try slugified match against options yielded by iterator
+    candidate_slug = _slugify(candidate)
     for option in _iter_option_entries(option_map):
-        if candidate == option["label"] or (option["id"] and candidate == option["id"]):
+        if (
+            candidate_slug == _slugify(option["label"])
+            or (option["id"] and candidate_slug == _slugify(option["id"]))
+        ):
             return option
+
+    # Try slugified match against raw option_map keys directly
+    for key, option_entry in option_map.items():
+        if candidate_slug == _slugify(key):
+            if isinstance(option_entry, dict):
+                return {
+                    "label": str(option_entry.get("label") or key).strip() or key,
+                    "id": str(option_entry.get("id") or "").strip(),
+                    "prompt": str(option_entry.get("prompt", "")),
+                    "raw": option_entry,
+                }
+            return {
+                "label": key,
+                "id": "",
+                "prompt": str(option_entry or ""),
+                "raw": option_entry,
+            }
+
     return None
 
 

@@ -35,12 +35,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     app = FastAPI()
     app.include_router(generations.router)
-    app.dependency_overrides[generations.get_current_user] = lambda: UserState(
+    current_user = UserState(
         id="user-123",
         name="Test User",
         plan="Pro",
         credits=20,
     )
+    app.dependency_overrides[generations.get_current_user] = lambda: current_user
+    app.dependency_overrides[generations.get_optional_current_user] = lambda: current_user
     test_client = TestClient(app)
     credit_client = _CreditClient(credits={"user-123": 20})
     monkeypatch.setattr(generations, "get_client", lambda: credit_client)
@@ -224,12 +226,47 @@ class _CreditClient:
         self.purchased_credits = dict(purchased_credits or {})
         self.edit_trials = dict(edit_trials or {user_id: 0 for user_id in credits})
         self.feedback_rows: list[dict[str, Any]] = []
+        self.generation_refunds: dict[str, tuple[str, int]] = {}
         self.fail_first_update = fail_first_update
         self.concurrent_credit_value = concurrent_credit_value
 
     def table(self, name: str) -> _CreditTable:
         assert name in {"profiles", "image_edit_feedback"}
         return _CreditTable(self, name)
+
+    def rpc(self, name: str, params: dict[str, Any]):
+        assert name == "refund_generation_credits"
+        client = self
+
+        class _RefundRpc:
+            def execute(self):
+                job_id = params["p_job_id"]
+                user_id = params["p_user_id"]
+                target = max(0, int(params["p_target_refunded_credits"]))
+                existing_user, refunded = client.generation_refunds.get(
+                    job_id,
+                    (user_id, 0),
+                )
+                if existing_user != user_id:
+                    raise RuntimeError("Generation refund owner mismatch")
+                delta = max(0, target - refunded)
+                client.credits[user_id] += delta
+                persisted_refunded = refunded + delta
+                client.generation_refunds[job_id] = (
+                    user_id,
+                    persisted_refunded,
+                )
+                return SimpleNamespace(
+                    data=[
+                        {
+                            "remaining_credits": client.credits[user_id]
+                            + client.purchased_credits.get(user_id, 0),
+                            "refunded_credits": persisted_refunded,
+                        }
+                    ]
+                )
+
+        return _RefundRpc()
 
 
 def test_generation_request_forwards_payload(monkeypatch: pytest.MonkeyPatch, client: TestClient, generation_payload: dict[str, Any]) -> None:
@@ -1088,6 +1125,196 @@ def test_failed_generation_event_is_sanitized(
     assert response.json()["errors"] == [generations.GENERATION_JOB_FAILURE_MESSAGE]
 
 
+def test_failed_generation_event_refunds_unfinished_looks_once(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, generation_payload: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
+    monkeypatch.setenv("GENERATION_SHARED_SECRET", "secret")
+
+    credit_client = _CreditClient(credits={"user-123": 20})
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+
+    class _QueuedAsyncClient(_MockAsyncClient):
+        async def post(
+            self, url: str, json: dict[str, Any], headers: dict[str, Any] | None = None
+        ) -> _MockResponse:
+            self.calls.append((url, json, headers or {}))
+            return _MockResponse(payload={"id": "gen-123", "status": "queued", "results": []})
+
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: _QueuedAsyncClient())
+
+    create_response = client.post("/generations", json=generation_payload)
+    job_id = create_response.json()["id"]
+    assert create_response.json()["remainingCredits"] == 4
+
+    headers = {"X-Generation-Secret": "secret"}
+    result_response = client.post(
+        f"/generations/{job_id}/events",
+        json={
+            "type": "result",
+            "result": {"url": "https://cdn.example/result-1.png"},
+            "completedLooks": 2,
+        },
+        headers=headers,
+    )
+    assert result_response.status_code == 200
+
+    failed_response = client.post(
+        f"/generations/{job_id}/events",
+        json={"type": "failed", "error": "worker failure"},
+        headers=headers,
+    )
+
+    assert failed_response.status_code == 200
+    assert failed_response.json()["status"] == "failed"
+    assert failed_response.json()["remainingCredits"] == 12
+    assert credit_client.credits["user-123"] == 12
+
+    duplicate_failed_response = client.post(
+        f"/generations/{job_id}/events",
+        json={"type": "failed", "error": "worker failure again"},
+        headers=headers,
+    )
+
+    assert duplicate_failed_response.status_code == 200
+    assert duplicate_failed_response.json()["remainingCredits"] == 12
+    assert credit_client.credits["user-123"] == 12
+
+
+def test_cancelled_generation_event_refunds_all_unfinished_looks(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, generation_payload: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
+    monkeypatch.setenv("GENERATION_SHARED_SECRET", "secret")
+
+    credit_client = _CreditClient(credits={"user-123": 20})
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+
+    class _QueuedAsyncClient(_MockAsyncClient):
+        async def post(
+            self, url: str, json: dict[str, Any], headers: dict[str, Any] | None = None
+        ) -> _MockResponse:
+            self.calls.append((url, json, headers or {}))
+            return _MockResponse(payload={"id": "gen-123", "status": "queued", "results": []})
+
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: _QueuedAsyncClient())
+
+    create_response = client.post("/generations", json=generation_payload)
+    job_id = create_response.json()["id"]
+    assert create_response.json()["remainingCredits"] == 4
+
+    cancelled_response = client.post(
+        f"/generations/{job_id}/events",
+        json={"type": "cancelled"},
+        headers={"X-Generation-Secret": "secret"},
+    )
+
+    assert cancelled_response.status_code == 200
+    assert cancelled_response.json()["status"] == "failed"
+    assert cancelled_response.json()["remainingCredits"] == 20
+    assert credit_client.credits["user-123"] == 20
+
+
+def test_user_cancel_generation_refunds_one_unfinished_look(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, generation_payload: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
+
+    credit_client = _CreditClient(credits={"user-123": 20})
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+
+    class _QueuedAsyncClient(_MockAsyncClient):
+        async def post(
+            self, url: str, json: dict[str, Any], headers: dict[str, Any] | None = None
+        ) -> _MockResponse:
+            self.calls.append((url, json, headers or {}))
+            return _MockResponse(payload={"id": "gen-123", "status": "queued", "results": []})
+
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: _QueuedAsyncClient())
+
+    create_response = client.post("/generations", json=generation_payload)
+    job_id = create_response.json()["id"]
+    assert create_response.json()["remainingCredits"] == 4
+
+    cancel_response = client.post(f"/generations/{job_id}/cancel")
+
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "queued"
+    assert cancel_response.json()["totalLooks"] == 3
+    assert cancel_response.json()["completedLooks"] == 0
+    assert cancel_response.json()["remainingCredits"] == 8
+    assert credit_client.credits["user-123"] == 8
+
+    second_cancel_response = client.post(f"/generations/{job_id}/cancel", json={"looks": 1})
+
+    assert second_cancel_response.status_code == 200
+    assert second_cancel_response.json()["status"] == "queued"
+    assert second_cancel_response.json()["totalLooks"] == 2
+    assert second_cancel_response.json()["remainingCredits"] == 12
+    assert credit_client.credits["user-123"] == 12
+
+
+def test_user_cancel_generation_ignores_late_results_for_cancelled_slot(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, generation_payload: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
+    monkeypatch.setenv("GENERATION_SHARED_SECRET", "secret")
+
+    credit_client = _CreditClient(credits={"user-123": 20})
+    persisted_results: list[str | None] = []
+    monkeypatch.setattr(
+        generations,
+        "_persist_generation_result",
+        lambda job, result: (
+            persisted_results.append(result.url) or result
+        ),
+    )
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+
+    class _QueuedAsyncClient(_MockAsyncClient):
+        async def post(
+            self, url: str, json: dict[str, Any], headers: dict[str, Any] | None = None
+        ) -> _MockResponse:
+            self.calls.append((url, json, headers or {}))
+            return _MockResponse(payload={"id": "gen-123", "status": "queued", "results": []})
+
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: _QueuedAsyncClient())
+
+    create_response = client.post("/generations", json=generation_payload)
+    job_id = create_response.json()["id"]
+
+    cancel_response = client.post(f"/generations/{job_id}/cancel")
+
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["totalLooks"] == 3
+
+    final_response = None
+    for index in range(4):
+        final_response = client.post(
+            f"/generations/{job_id}/events",
+            json={
+                "type": "result",
+                "result": {"url": f"https://cdn.example/results/{index}.png"},
+                "completedLooks": index + 1,
+            },
+            headers={"X-Generation-Secret": "secret"},
+        )
+
+    assert final_response is not None
+    assert final_response.status_code == 200
+    assert final_response.json()["status"] == "completed"
+    assert final_response.json()["totalLooks"] == 3
+    assert final_response.json()["completedLooks"] == 3
+    assert len(final_response.json()["results"]) == 3
+    assert final_response.json()["remainingCredits"] is None
+    assert len(persisted_results) == 3
+    assert credit_client.credits["user-123"] == 8
+
+
 def test_failed_generation_event_publishes_notification(
     monkeypatch: pytest.MonkeyPatch, client: TestClient, generation_payload: dict[str, Any]
 ) -> None:
@@ -1273,12 +1500,14 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
 
     app = FastAPI()
     app.include_router(generations.router)
-    app.dependency_overrides[generations.get_current_user] = lambda: UserState(
+    current_user = UserState(
         id="user-123",
         name="Test User",
         plan="Pro",
         credits=20,
     )
+    app.dependency_overrides[generations.get_current_user] = lambda: current_user
+    app.dependency_overrides[generations.get_optional_current_user] = lambda: current_user
     test_client = TestClient(app)
 
     monkeypatch.setenv(

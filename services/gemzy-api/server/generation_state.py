@@ -35,8 +35,12 @@ class GenerationJob:
     edit_credit_cost: int | None = None
     edit_trial_applied: bool = False
     edit_mode_trial_edits_remaining: int | None = None
+    reserved_credit_cost: int = 0
+    refunded_credit_cost: int = 0
+    credit_cost_per_look: int = 0
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    lifecycle_lock: RLock = field(default_factory=RLock, repr=False, compare=False)
 
     def touch(self) -> None:
         self.updated_at = datetime.utcnow()
@@ -64,6 +68,8 @@ def create_job(
     edit_credit_cost: int | None = None,
     edit_trial_applied: bool = False,
     edit_mode_trial_edits_remaining: int | None = None,
+    reserved_credit_cost: int = 0,
+    credit_cost_per_look: int = 0,
 ) -> GenerationJob:
     job = GenerationJob(
         id=job_id,
@@ -82,6 +88,8 @@ def create_job(
         edit_credit_cost=edit_credit_cost,
         edit_trial_applied=edit_trial_applied,
         edit_mode_trial_edits_remaining=edit_mode_trial_edits_remaining,
+        reserved_credit_cost=reserved_credit_cost,
+        credit_cost_per_look=credit_cost_per_look,
     )
     with _LOCK:
         _JOBS[job_id] = job
@@ -125,6 +133,9 @@ def mark_started(job: GenerationJob) -> None:
 
 def add_result(job: GenerationJob, result: GenerationResultPayload) -> None:
     with _LOCK:
+        if job.status == "failed" or len(job.results) >= job.total_looks:
+            job.touch()
+            return
         job.results.append(result)
         job.completed_looks = min(job.total_looks, len(job.results))
         if job.total_looks:
@@ -136,7 +147,7 @@ def update_progress(job: GenerationJob, progress: float, completed: Optional[int
     with _LOCK:
         job.progress = max(0.0, min(1.0, progress))
         if completed is not None:
-            job.completed_looks = max(job.completed_looks, completed)
+            job.completed_looks = min(job.total_looks, max(job.completed_looks, completed))
         job.touch()
 
 

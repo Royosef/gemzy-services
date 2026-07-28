@@ -140,11 +140,15 @@ def _map_creation_look_preset(row: dict) -> CreationLookPreset:
     )
 
 
-@creation_look_presets_router.get("/", response_model=list[CreationLookPreset])
+@creation_look_presets_router.get("", response_model=list[CreationLookPreset])
+@creation_look_presets_router.get(
+    "/",
+    response_model=list[CreationLookPreset],
+    include_in_schema=False,
+)
 def list_creation_look_presets(
     taskKey: str | None = Query(None),
     engineId: str | None = Query(None),
-    current: UserState = Depends(get_current_user),
 ) -> list[CreationLookPreset]:
     query = (
         get_client()
@@ -199,7 +203,12 @@ def _fetch_owned_look(look_id: str, user_id: str) -> dict:
     return rows[0]
 
 
-@router.get("/", response_model=list[SavedLook])
+@router.get("", response_model=list[SavedLook])
+@router.get(
+    "/",
+    response_model=list[SavedLook],
+    include_in_schema=False,
+)
 def list_saved_looks(
     surface: str = Query("on-model"),
     current: UserState = Depends(get_current_user),
@@ -216,7 +225,17 @@ def list_saved_looks(
     return [_map_saved_look(row) for row in (response.data or [])]
 
 
-@router.post("/", response_model=SavedLook, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=SavedLook,
+    status_code=status.HTTP_201_CREATED,
+)
+@router.post(
+    "/",
+    response_model=SavedLook,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
 def create_saved_look(
     payload: CreateSavedLookPayload,
     current: UserState = Depends(get_current_user),

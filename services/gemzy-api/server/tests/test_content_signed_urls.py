@@ -228,6 +228,56 @@ def test_generate_signed_url_success(app: FastAPI) -> None:
     assert "expiresAt" in payload
 
 
+def test_create_collection_allows_empty_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = FastAPI()
+    app.include_router(content.collections_router)
+    app.dependency_overrides[content.get_current_user] = lambda: UserState(
+        id="user-123",
+        name="Test User",
+        plan="Pro",
+        credits=10,
+    )
+
+    inserted_rows: list[dict[str, Any]] = []
+
+    class _InsertTable:
+        def insert(self, payload: dict[str, Any]) -> "_InsertTable":
+            inserted_rows.append(payload)
+            return self
+
+        def execute(self) -> object:
+            return object()
+
+    class _InsertClient:
+        def table(self, name: str) -> _InsertTable:
+            assert name == "collections"
+            return _InsertTable()
+
+    monkeypatch.setattr(content, "get_client", lambda: _InsertClient())
+    monkeypatch.setattr(
+        content,
+        "_fetch_collections",
+        lambda *_args, **_kwargs: [
+            content.Collection(
+                id=inserted_rows[0]["id"],
+                name=inserted_rows[0]["name"],
+                cover=None,
+                createdAt=inserted_rows[0]["created_at"],
+                curatedBy="Test User",
+                items=[],
+            )
+        ],
+    )
+
+    client = TestClient(app)
+    response = client.post("/collections/", json={"name": "Campaign 1", "images": []})
+
+    assert response.status_code == 201
+    assert response.json()["name"] == "Campaign 1"
+    assert response.json()["items"] == []
+    assert inserted_rows[0]["cover_url"] is None
+
+
 def test_generate_signed_url_rejects_non_user_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.include_router(content.collections_router)

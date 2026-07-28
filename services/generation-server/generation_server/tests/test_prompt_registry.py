@@ -265,3 +265,28 @@ def test_resolve_prompt_task_prefers_published_version_when_active_differs() -> 
     )
 
     assert row["version"]["id"] == "version-published"
+
+
+def test_resolve_prompt_task_supports_underscores_and_casing_variations_for_v45() -> None:
+    rendered = resolve_prompt_task(
+        PROMPT_TASK_IMAGE_GENERATION_COMPOSE,
+        {
+            "request": {
+                "model": {"slug": "model"},
+                "style": {
+                    "public_version_key": "v4.5",
+                    "background": "coastal_cliffs",
+                    "camera": "BEAUTY_CLOSE_UP",
+                    "image_style": "cool-editorial",
+                },
+                "looks": 1,
+                "items": [{"type": "Ring", "size": "Small"}],
+            }
+        },
+    )
+
+    assert rendered["prompts"]
+    prompt = rendered["prompts"][0]
+    assert "\nSCENE: Coastal Cliffs\n" in prompt
+    assert "\nCAMERA STYLE: Beauty Close-Up\n" in prompt
+    assert "\nSTYLE: Cool Editorial\n" in prompt

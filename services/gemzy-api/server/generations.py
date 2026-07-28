@@ -7,7 +7,7 @@ import json
 import base64
 import io
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 from uuid import uuid4
@@ -23,7 +23,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from prompting.registry import ensure_default_prompt_registry, resolve_prompt_task_row
 from prompting.ui_catalog import resolve_generation_ui_catalog
 
-from .auth import get_current_user
+from .auth import get_current_user, get_optional_current_user
 from .content import (
     COLLECTIONS_CACHE_CONTROL,
     COLLECTIONS_OWNER_METADATA_KEY,
@@ -48,6 +48,7 @@ from .generation_state import (
 )
 from .notifications import publish_app_notification
 from .schemas import (
+    CancelGenerationPayload,
     CreateGenerationPayload,
     CreateGenerationResponse,
     CreateImageEditPayload,
@@ -609,6 +610,135 @@ def _adjust_profile_credits(user_id: str, delta: int, *, max_attempts: int = 5) 
     )
 
 
+def _completed_credit_cost(job: GenerationJob) -> int:
+    reserved = max(0, int(job.reserved_credit_cost or 0))
+    if reserved <= 0:
+        return 0
+
+    completed = max(job.completed_looks, len(job.results))
+    if completed <= 0:
+        return 0
+
+    completed = min(completed, job.total_looks)
+    per_look = _credit_cost_per_look(job)
+    if per_look <= 0:
+        if job.total_looks <= 1:
+            return reserved
+        return min(reserved, (reserved * completed) // job.total_looks)
+    return min(reserved, per_look * completed)
+
+
+def _credit_cost_per_look(job: GenerationJob) -> int:
+    per_look = max(0, int(job.credit_cost_per_look or 0))
+    if per_look > 0:
+        return per_look
+    reserved = max(0, int(job.reserved_credit_cost or 0))
+    if reserved <= 0:
+        return 0
+    return max(1, reserved // max(1, job.total_looks))
+
+
+def _apply_generation_credit_refund(
+    job: GenerationJob,
+    target_refunded_credits: int,
+) -> tuple[int, int]:
+    """Atomically refund up to a cumulative target for a generation job."""
+
+    response = get_client().rpc(
+        "refund_generation_credits",
+        {
+            "p_job_id": job.id,
+            "p_user_id": job.user_id,
+            "p_target_refunded_credits": max(0, int(target_refunded_credits)),
+        },
+    ).execute()
+    rows = response.data or []
+    row = rows[0] if isinstance(rows, list) and rows else rows
+    if not isinstance(row, dict):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to refund generation credits right now.",
+        )
+    return (
+        _normalize_credit_value(row.get("remaining_credits")),
+        _normalize_credit_value(row.get("refunded_credits")),
+    )
+
+
+def _refund_unfinished_reserved_credits(job: GenerationJob) -> int | None:
+    if _is_guest_user_id(job.user_id):
+        return None
+
+    with job.lifecycle_lock:
+        reserved = max(0, int(job.reserved_credit_cost or 0))
+        target_refunded = max(0, reserved - _completed_credit_cost(job))
+        already_refunded = max(0, int(job.refunded_credit_cost or 0))
+        if target_refunded <= already_refunded:
+            return _adjust_profile_credits(job.user_id, 0)
+
+        try:
+            remaining, persisted_refunded = _apply_generation_credit_refund(
+                job,
+                target_refunded,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to refund unfinished generation credits up to %s for job %s",
+                target_refunded,
+                job.id,
+            )
+            return None
+
+        job.refunded_credit_cost = max(
+            job.refunded_credit_cost,
+            persisted_refunded,
+        )
+        return remaining
+
+
+def _refund_cancelled_reserved_looks(job: GenerationJob, looks: int = 1) -> int | None:
+    if _is_guest_user_id(job.user_id):
+        return None
+
+    with job.lifecycle_lock:
+        requested_looks = max(1, int(looks or 1))
+        completed = min(job.total_looks, max(job.completed_looks, len(job.results)))
+        unfinished = max(0, job.total_looks - completed)
+        cancellable = min(requested_looks, unfinished)
+        if cancellable <= 0:
+            return _adjust_profile_credits(job.user_id, 0)
+
+        reserved = max(0, int(job.reserved_credit_cost or 0))
+        already_refunded = max(0, int(job.refunded_credit_cost or 0))
+        per_look = _credit_cost_per_look(job)
+        completed_cost = _completed_credit_cost(job)
+        available_reserved = max(0, reserved - already_refunded - completed_cost)
+        refundable = min(available_reserved, cancellable * per_look)
+
+        if refundable > 0:
+            remaining, persisted_refunded = _apply_generation_credit_refund(
+                job,
+                already_refunded + refundable,
+            )
+            job.refunded_credit_cost = max(
+                job.refunded_credit_cost,
+                persisted_refunded,
+            )
+        else:
+            remaining = _adjust_profile_credits(job.user_id, 0)
+
+        job.total_looks = max(completed, job.total_looks - cancellable)
+        job.completed_looks = min(job.total_looks, job.completed_looks)
+        if job.total_looks <= 0:
+            mark_failed(job, "Generation cancelled.")
+        elif job.completed_looks >= job.total_looks and job.completed_looks > 0:
+            mark_completed(job)
+        else:
+            job.progress = min(1.0, job.completed_looks / job.total_looks) if job.total_looks else 1.0
+            job.touch()
+        return remaining
+
+
 def _resolve_generation_url(override: str | None) -> str:
     """Return the target generation endpoint."""
 
@@ -928,7 +1058,9 @@ def _persist_generation_result(
     item_id: str | None = None
     created_at: str | None = None
 
-    if storage_path:
+    if storage_path and _is_guest_user_id(job.user_id):
+        collection_id = None
+    elif storage_path:
         sb = get_client()
         try:
             collection_id = job.unsaved_collection_id or ensure_unsaved_collection(job.user_id)
@@ -1241,6 +1373,152 @@ COST_PER_LOOK = {
     "2K": 5,
     "4K": 7,
 }
+GUEST_USER_ID_PREFIX = "guest:"
+GUEST_ALLOWED_TASK_TYPES = {BASE_TASK_TYPE_ON_MODEL, BASE_TASK_TYPE_PURE_JEWELRY}
+GUEST_GENERATION_LOOKS = int(os.getenv("GUEST_GENERATION_LOOKS", "2"))
+GUEST_GENERATION_QUALITY = os.getenv("GUEST_GENERATION_QUALITY", "1080p")
+GUEST_GENERATION_MAX_UPLOADS = int(os.getenv("GUEST_GENERATION_MAX_UPLOADS", "1"))
+GUEST_GENERATION_MAX_UPLOAD_BYTES = int(
+    os.getenv("GUEST_GENERATION_MAX_UPLOAD_BYTES", str(8 * 1024 * 1024))
+)
+GUEST_GENERATION_WINDOW_SECONDS = int(
+    os.getenv("GUEST_GENERATION_WINDOW_SECONDS", str(24 * 60 * 60))
+)
+GUEST_GENERATION_MAX_PER_WINDOW = int(
+    os.getenv("GUEST_GENERATION_MAX_PER_WINDOW", "8")
+)
+_GUEST_GENERATION_ATTEMPTS: dict[str, list[datetime]] = {}
+GUEST_ALLOWED_1080P_DIMS = {
+    "1:1": (1080, 1080),
+    "2:3": (720, 1080),
+    "3:2": (1620, 1080),
+    "3:4": (810, 1080),
+    "4:3": (1440, 1080),
+    "4:5": (864, 1080),
+    "9:16": (608, 1080),
+    "16:9": (1920, 1080),
+    "21:9": (2520, 1080),
+}
+
+
+def _is_guest_user_id(user_id: str | None) -> bool:
+    return isinstance(user_id, str) and user_id.startswith(GUEST_USER_ID_PREFIX)
+
+
+def _is_guest_generation_request(payload: CreateGenerationPayload) -> bool:
+    return (payload.style or {}).get("onboarding_guest") == "true"
+
+
+def _guest_request_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _check_guest_generation_quota(request: Request) -> None:
+    if GUEST_GENERATION_MAX_PER_WINDOW <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Guest generation is disabled.",
+        )
+
+    key = _guest_request_key(request)
+    now = datetime.utcnow()
+    window_start = now - timedelta(seconds=GUEST_GENERATION_WINDOW_SECONDS)
+    attempts = [
+        attempt
+        for attempt in _GUEST_GENERATION_ATTEMPTS.get(key, [])
+        if attempt >= window_start
+    ]
+    if len(attempts) >= GUEST_GENERATION_MAX_PER_WINDOW:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Guest generation limit reached. Please sign up to keep creating.",
+        )
+
+    attempts.append(now)
+    _GUEST_GENERATION_ATTEMPTS[key] = attempts
+
+
+def _validate_guest_generation_payload(
+    request: Request,
+    payload: CreateGenerationPayload,
+) -> None:
+    task_type = _generation_task_type(payload)
+    if task_type not in GUEST_ALLOWED_TASK_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This guest generation mode is not available.",
+        )
+    if payload.collectionId:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Collections require sign up.",
+        )
+    if payload.generationServerUrl:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Custom generation targets are not available for guest generation.",
+        )
+    if payload.promptOverrides:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Prompt overrides require sign up.",
+        )
+    if payload.looks != GUEST_GENERATION_LOOKS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign up to customize image count.",
+        )
+    if payload.quality != GUEST_GENERATION_QUALITY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign up to customize resolution.",
+        )
+    expected_dims = GUEST_ALLOWED_1080P_DIMS.get(payload.aspect)
+    if expected_dims is None or (payload.dims.w, payload.dims.h) != expected_dims:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Guest generation dimensions do not match the selected aspect.",
+        )
+    if len(payload.uploads) < 1 or len(payload.uploads) > GUEST_GENERATION_MAX_UPLOADS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Guest generation supports one jewelry upload.",
+        )
+    if len(payload.items) < 1 or len(payload.items) > GUEST_GENERATION_MAX_UPLOADS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Guest generation supports one jewelry item.",
+        )
+    upload_ids = {upload.id for upload in payload.uploads}
+    if any(item.uploadId not in upload_ids for item in payload.items):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Generation item references an unknown upload.",
+        )
+    for upload in payload.uploads:
+        declared_size = upload.fileSize or 0
+        estimated_size = int(len(upload.base64) * 0.75)
+        if max(declared_size, estimated_size) > GUEST_GENERATION_MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Guest upload is too large.",
+            )
+
+    _check_guest_generation_quota(request)
+
+
+def _build_guest_user(job_id: str) -> UserState:
+    return UserState(
+        id=f"{GUEST_USER_ID_PREFIX}{job_id}",
+        email=None,
+        name="Guest",
+        plan="Free",
+        credits=GUEST_GENERATION_LOOKS
+        * COST_PER_LOOK.get(GUEST_GENERATION_QUALITY, COST_PER_LOOK["1080p"]),
+        monthlyCredits=0,
+        purchasedCredits=0,
+        onboardingCompleted=False,
+    )
 
 
 def _validate_motion_frame_url(value: str) -> str:
@@ -1515,13 +1793,8 @@ async def _run_motion_generation_job(
                 "Failed to publish completion notification for motion job %s", job.id
             )
     except Exception:
-        try:
-            _adjust_profile_credits(user_id, required_credits)
-        except Exception:
-            logger.exception(
-                "Failed to refund credits for user %s after motion failure", user_id
-            )
         mark_failed(job, MOTION_START_FAILURE_MESSAGE)
+        _refund_unfinished_reserved_credits(job)
         try:
             _publish_generation_failed_notification(job)
         except Exception:
@@ -1817,22 +2090,24 @@ async def create_image_edit(
         edit_credit_cost=0 if edit_trial_applied else required_credits,
         edit_trial_applied=edit_trial_applied,
         edit_mode_trial_edits_remaining=new_trial_remaining,
+        reserved_credit_cost=0 if edit_trial_applied else required_credits,
+        credit_cost_per_look=0 if edit_trial_applied else required_credits,
     )
 
     try:
         response = await _forward_generation_request(target_url, forwarded_payload)
     except Exception:
-        try:
-            if edit_trial_applied:
-                _adjust_edit_mode_trial_edits(user.id, 1)
-            else:
-                _adjust_profile_credits(user.id, required_credits)
-        except Exception:
-            logger.exception(
-                "Failed to refund edit cost for user %s after edit dispatch failure",
-                user.id,
-            )
         mark_failed(job, IMAGE_EDIT_START_FAILURE_MESSAGE)
+        if edit_trial_applied:
+            try:
+                _adjust_edit_mode_trial_edits(user.id, 1)
+            except Exception:
+                logger.exception(
+                    "Failed to restore Edit Mode trial for user %s after dispatch failure",
+                    user.id,
+                )
+        else:
+            _refund_unfinished_reserved_credits(job)
         raise
 
     if response.results:
@@ -1865,6 +2140,9 @@ async def create_image_edit(
     elif response.status == "failed":
         error_message = response.errors[0] if response.errors else IMAGE_EDIT_JOB_FAILURE_MESSAGE
         mark_failed(job, error_message)
+        refunded_credits = _refund_unfinished_reserved_credits(job)
+        if refunded_credits is not None:
+            new_credits = refunded_credits
         try:
             _publish_image_edit_failed_notification(job)
         except Exception:
@@ -1974,6 +2252,8 @@ async def create_motion_generation(
         dims={"w": 608, "h": 1080},
         quality=payload.resolution,
         job_type="motion",
+        reserved_credit_cost=required_credits,
+        credit_cost_per_look=COST_PER_LOOK["1080p"],
     )
 
     _schedule_motion_generation_job(
@@ -1993,7 +2273,7 @@ async def create_motion_generation(
 async def create_generation(
     request: Request,
     payload: CreateGenerationPayload,
-    user: UserState = Depends(get_current_user),
+    user: UserState | None = Depends(get_optional_current_user),
 ) -> CreateGenerationResponse:
     """Accept a generation request from the client and relay it to the worker."""
 
@@ -2004,6 +2284,15 @@ async def create_generation(
     # print("Model: ", json.dumps(model_debug, indent=2))
 
     job_id = uuid4().hex
+    is_guest_generation = user is None and _is_guest_generation_request(payload)
+    if user is None:
+        if not is_guest_generation:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sign up to start this generation.",
+            )
+        _validate_guest_generation_payload(request, payload)
+        user = _build_guest_user(job_id)
 
     # Tier Enforcement
     tier_levels = {"Free": 0, "Starter": 1, "Pro": 2, "Designer": 3}
@@ -2012,7 +2301,10 @@ async def create_generation(
     user_tier = normalize_plan(user.plan)
     required_tier = normalize_plan(payload.model.planTier)
 
-    if tier_levels.get(user_tier, 0) < tier_levels.get(required_tier, 0):
+    if (
+        not is_guest_generation
+        and tier_levels.get(user_tier, 0) < tier_levels.get(required_tier, 0)
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"This model requires the {required_tier} plan.",
@@ -2021,7 +2313,7 @@ async def create_generation(
     # Calculate required credits server-side to prevent tampering
     required_credits = payload.looks * COST_PER_LOOK.get(payload.quality, 1)
 
-    if required_credits > user.credits:
+    if not is_guest_generation and required_credits > user.credits:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="You do not have enough credits to perform this action",
@@ -2035,18 +2327,25 @@ async def create_generation(
         payload.style, _generation_task_type(payload)
     )
     payload = payload.model_copy(update={"style": generation_style})
-    target_collection_id = _resolve_generation_target_collection_id(payload, user)
+    target_collection_id = (
+        None
+        if is_guest_generation
+        else _resolve_generation_target_collection_id(payload, user)
+    )
 
     callback_url = _build_callback_url(job_id)
     target_url = _resolve_generation_url(payload.generationServerUrl)
     forwarded_payload = _build_generation_payload(payload, user, job_id, callback_url)
 
-    new_credits = _adjust_profile_credits(user.id, -required_credits)
-    if new_credits is None:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="You do not have enough credits to perform this action",
-        )
+    new_credits = 0
+    if not is_guest_generation:
+        adjusted_credits = _adjust_profile_credits(user.id, -required_credits)
+        if adjusted_credits is None:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="You do not have enough credits to perform this action",
+            )
+        new_credits = adjusted_credits
 
     job = create_job(
         job_id,
@@ -2059,16 +2358,16 @@ async def create_generation(
         dims=_dims_payload(payload.dims),
         quality=payload.quality,
         unsaved_collection_id=target_collection_id,
+        reserved_credit_cost=0 if is_guest_generation else required_credits,
+        credit_cost_per_look=0 if is_guest_generation else COST_PER_LOOK.get(payload.quality, 1),
     )
 
     try:
         response = await _forward_generation_request(target_url, forwarded_payload)
     except Exception:
-        try:
-            _adjust_profile_credits(user.id, required_credits)
-        except Exception:
-            logger.exception("Failed to refund credits for user %s after dispatch failure", user.id)
         mark_failed(job, GENERATION_START_FAILURE_MESSAGE)
+        if not is_guest_generation:
+            _refund_unfinished_reserved_credits(job)
         raise
 
     # If the worker replies with immediate results, persist them now.
@@ -2089,17 +2388,22 @@ async def create_generation(
 
     if response.status == "completed":
         mark_completed(job)
-        try:
-            _publish_generation_completed_notification(job)
-        except Exception:
-            logger.exception("Failed to publish completion notification for generation job %s", job.id)
+        if not is_guest_generation:
+            try:
+                _publish_generation_completed_notification(job)
+            except Exception:
+                logger.exception("Failed to publish completion notification for generation job %s", job.id)
     elif response.status == "failed":
         error_message = response.errors[0] if response.errors else GENERATION_JOB_FAILURE_MESSAGE
         mark_failed(job, error_message)
-        try:
-            _publish_generation_failed_notification(job)
-        except Exception:
-            logger.exception("Failed to publish failure notification for generation job %s", job.id)
+        if not is_guest_generation:
+            refunded_credits = _refund_unfinished_reserved_credits(job)
+            if refunded_credits is not None:
+                new_credits = refunded_credits
+            try:
+                _publish_generation_failed_notification(job)
+            except Exception:
+                logger.exception("Failed to publish failure notification for generation job %s", job.id)
 
     job_state = to_response(job)
     # Merge worker-provided status when available.
@@ -2133,15 +2437,39 @@ def _require_secret(request: Request) -> None:
 @router.get("/{job_id}", response_model=CreateGenerationResponse)
 async def retrieve_generation(
     job_id: str,
-    user: UserState = Depends(get_current_user),
+    user: UserState | None = Depends(get_optional_current_user),
 ) -> CreateGenerationResponse:
     """Return the latest status for a generation job."""
+
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
+    if _is_guest_user_id(job.user_id):
+        return CreateGenerationResponse(**to_response(job))
+    if user is None or job.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
+
+    return CreateGenerationResponse(**to_response(job))
+
+
+@router.post("/{job_id}/cancel", response_model=CreateGenerationResponse)
+async def cancel_generation(
+    job_id: str,
+    payload: CancelGenerationPayload | None = None,
+    user: UserState = Depends(get_current_user),
+) -> CreateGenerationResponse:
+    """Cancel queued generation slots and refund only those credits."""
 
     job = get_job(job_id)
     if job is None or job.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
 
-    return CreateGenerationResponse(**to_response(job))
+    remaining_credits = _refund_cancelled_reserved_looks(job, payload.looks if payload else 1)
+
+    job_state = to_response(job)
+    if remaining_credits is not None:
+        job_state["remainingCredits"] = remaining_credits
+    return CreateGenerationResponse(**job_state)
 
 
 @router.post("/{job_id}/events", response_model=CreateGenerationResponse)
@@ -2158,6 +2486,8 @@ async def receive_generation_event(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
 
+    remaining_credits: int | None = None
+
     if event.type == "started":
         mark_started(job)
     elif event.type == "result":
@@ -2166,23 +2496,31 @@ async def receive_generation_event(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Result event requires a payload",
             )
-        stored_result = _persist_generation_result(job, event.result)
-        add_result(job, stored_result)
-        if event.progress is not None or event.completedLooks is not None:
-            update_progress(job, event.progress or job.progress, event.completedLooks)
-        if (
-            job.completed_looks >= job.total_looks
-            and job.completed_looks > 0
-            and job.status != "completed"
-        ):
-            mark_completed(job)
-            try:
-                if job.job_type == "image_edit":
-                    _publish_image_edit_completed_notification(job)
-                else:
-                    _publish_generation_completed_notification(job)
-            except Exception:
-                logger.exception("Failed to publish completion notification for job %s", job.id)
+        with job.lifecycle_lock:
+            if job.status in {"failed", "completed"} or len(job.results) >= job.total_looks:
+                logger.info(
+                    "Ignoring late result for terminal or full generation job %s",
+                    job.id,
+                )
+            else:
+                stored_result = _persist_generation_result(job, event.result)
+                add_result(job, stored_result)
+                if event.progress is not None or event.completedLooks is not None:
+                    update_progress(job, event.progress or job.progress, event.completedLooks)
+                if (
+                    job.completed_looks >= job.total_looks
+                    and job.completed_looks > 0
+                    and job.status != "completed"
+                ):
+                    mark_completed(job)
+                    if not _is_guest_user_id(job.user_id):
+                        try:
+                            if job.job_type == "image_edit":
+                                _publish_image_edit_completed_notification(job)
+                            else:
+                                _publish_generation_completed_notification(job)
+                        except Exception:
+                            logger.exception("Failed to publish completion notification for job %s", job.id)
     elif event.type == "progress":
         if event.progress is None and event.completedLooks is None:
             raise HTTPException(
@@ -2195,35 +2533,47 @@ async def receive_generation_event(
         was_completed = job.status == "completed"
         mark_completed(job)
         if not was_completed:
-            try:
-                if job.job_type == "image_edit":
-                    _publish_image_edit_completed_notification(job)
-                else:
-                    _publish_generation_completed_notification(job)
-            except Exception:
-                logger.exception("Failed to publish completion notification for generation job %s", job.id)
+            if not _is_guest_user_id(job.user_id):
+                try:
+                    if job.job_type == "image_edit":
+                        _publish_image_edit_completed_notification(job)
+                    else:
+                        _publish_generation_completed_notification(job)
+                except Exception:
+                    logger.exception("Failed to publish completion notification for generation job %s", job.id)
     elif event.type == "failed":
-        if event.error:
-            logger.warning("Generation job %s failed: %s", job.id, event.error[:1000])
-        else:
-            logger.warning("Generation job %s failed without an error payload", job.id)
-        failure_message = (
-            IMAGE_EDIT_JOB_FAILURE_MESSAGE
-            if job.job_type == "image_edit"
-            else GENERATION_JOB_FAILURE_MESSAGE
-        )
-        mark_failed(job, failure_message)
-        try:
-            if job.job_type == "image_edit":
-                _publish_image_edit_failed_notification(job)
+        with job.lifecycle_lock:
+            if event.error:
+                logger.warning("Generation job %s failed: %s", job.id, event.error[:1000])
             else:
-                _publish_generation_failed_notification(job)
-        except Exception:
-            logger.exception("Failed to publish failure notification for generation job %s", job.id)
+                logger.warning("Generation job %s failed without an error payload", job.id)
+            failure_message = (
+                IMAGE_EDIT_JOB_FAILURE_MESSAGE
+                if job.job_type == "image_edit"
+                else GENERATION_JOB_FAILURE_MESSAGE
+            )
+            mark_failed(job, failure_message)
+            remaining_credits = _refund_unfinished_reserved_credits(job)
+            if not _is_guest_user_id(job.user_id):
+                try:
+                    if job.job_type == "image_edit":
+                        _publish_image_edit_failed_notification(job)
+                    else:
+                        _publish_generation_failed_notification(job)
+                except Exception:
+                    logger.exception("Failed to publish failure notification for generation job %s", job.id)
+    elif event.type in {"cancelled", "canceled"}:
+        with job.lifecycle_lock:
+            logger.info("Generation job %s cancelled", job.id)
+            mark_failed(job, "Generation cancelled.")
+            remaining_credits = _refund_unfinished_reserved_credits(job)
     else:  # pragma: no cover - safeguard for future event types
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unsupported event type",
         )
 
-    return CreateGenerationResponse(**to_response(job))
+    job_state = to_response(job)
+    if remaining_credits is not None:
+        job_state["remainingCredits"] = remaining_credits
+    return CreateGenerationResponse(**job_state)
