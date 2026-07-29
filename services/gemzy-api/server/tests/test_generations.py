@@ -1427,6 +1427,21 @@ def test_generation_event_requires_secret(
 DEMO_MOTION_VIDEO_PATH = Path("C:/gemzy/assets/create-menu/motion.mp4")
 
 
+def test_motion_credit_costs_are_duration_based() -> None:
+    assert generations._motion_credit_cost(5, 1) == 25
+    assert generations._motion_credit_cost(8, 1) == 40
+    assert generations._motion_credit_cost(8, 2) == 80
+
+
+def test_generation_config_exposes_authoritative_motion_costs(
+    client: TestClient,
+) -> None:
+    response = client.get("/generations/config")
+
+    assert response.status_code == 200
+    assert response.json()["motionCostByDuration"] == {"5": 25, "8": 40}
+
+
 @pytest.mark.skipif(
     not DEMO_MOTION_VIDEO_PATH.exists(),
     reason="Local Gemzy demo motion video is not available",
@@ -1478,7 +1493,7 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
                 [{"id": "motion-item-1", "created_at": "2026-07-02T12:00:00"}]
             )
 
-    credit_client = _CreditClient(credits={"user-123": 20})
+    credit_client = _CreditClient(credits={"user-123": 50})
 
     class _Client:
         def table(self, name: str):
@@ -1504,7 +1519,7 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
         id="user-123",
         name="Test User",
         plan="Pro",
-        credits=20,
+        credits=50,
     )
     app.dependency_overrides[generations.get_current_user] = lambda: current_user
     app.dependency_overrides[generations.get_optional_current_user] = lambda: current_user
@@ -1544,7 +1559,7 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] in {"queued", "in_progress", "completed"}
-    assert body["remainingCredits"] == 16
+    assert body["remainingCredits"] == 10
     assert body["totalLooks"] == 1
     job_id = body["id"]
 
@@ -1594,7 +1609,7 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
     assert inserted["metadata"]["previewUri"] == "https://cdn.example/source.png"
     assert inserted["metadata"]["size"] == DEMO_MOTION_VIDEO_PATH.stat().st_size
     assert inserted["metadata"]["taskType"] == "motion"
-    assert credit_client.credits["user-123"] == 16
+    assert credit_client.credits["user-123"] == 10
 
 
 def test_motion_generation_returns_immediately_with_queued_job(
@@ -1608,6 +1623,15 @@ def test_motion_generation_returns_immediately_with_queued_job(
         "_schedule_motion_generation_job",
         lambda job, **kwargs: scheduled.append({"job": job, **kwargs}),
     )
+    current_user = UserState(
+        id="user-123",
+        name="Test User",
+        plan="Pro",
+        credits=100,
+    )
+    client.app.dependency_overrides[generations.get_current_user] = lambda: current_user
+    credit_client = _CreditClient(credits={"user-123": 100})
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
 
     response = client.post(
         "/generations/motion",
@@ -1627,11 +1651,13 @@ def test_motion_generation_returns_immediately_with_queued_job(
     assert body["results"] == []
     assert body["completedLooks"] == 0
     assert body["totalLooks"] == 2
-    assert body["remainingCredits"] == 12
+    assert body["remainingCredits"] == 20
     assert len(scheduled) == 1
     assert scheduled[0]["job"].id == body["id"]
     assert scheduled[0]["job"].total_looks == 2
-    assert scheduled[0]["required_credits"] == 8
+    assert scheduled[0]["required_credits"] == 80
+    assert scheduled[0]["job"].reserved_credit_cost == 80
+    assert scheduled[0]["job"].credit_cost_per_look == 40
 
 def test_persist_generation_result_refreshes_draft_cover(
     monkeypatch: pytest.MonkeyPatch,

@@ -506,7 +506,7 @@ class CreateMotionGenerationPayload(BaseModel):
 
     prompt: str
     firstFrameUrl: str
-    duration: Literal[4, 5, 6, 8, 10, 12, 15] = 8
+    duration: Literal[5, 8] = 5
     resolution: Literal["480p", "720p"] = "720p"
     aspectRatio: Literal[
         "16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"

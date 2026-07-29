@@ -1373,6 +1373,16 @@ COST_PER_LOOK = {
     "2K": 5,
     "4K": 7,
 }
+MOTION_CREDITS_PER_VIDEO = {
+    5: 25,
+    8: 40,
+}
+
+
+def _motion_credit_cost(duration: int, video_count: int) -> int:
+    return MOTION_CREDITS_PER_VIDEO[duration] * video_count
+
+
 GUEST_USER_ID_PREFIX = "guest:"
 GUEST_ALLOWED_TASK_TYPES = {BASE_TASK_TYPE_ON_MODEL, BASE_TASK_TYPE_PURE_JEWELRY}
 GUEST_GENERATION_LOOKS = int(os.getenv("GUEST_GENERATION_LOOKS", "2"))
@@ -1832,6 +1842,7 @@ def get_generation_config() -> dict[str, Any]:
             "base": COST_PER_LOOK["1080p"],
             "upscale": COST_PER_LOOK["4K"],
         },
+        "motionCostByDuration": MOTION_CREDITS_PER_VIDEO,
     }
 
 
@@ -2226,7 +2237,8 @@ async def create_motion_generation(
             detail=f"This model requires the {required_tier} plan.",
         )
 
-    required_credits = payload.videoCount * COST_PER_LOOK["1080p"]
+    credit_cost_per_video = MOTION_CREDITS_PER_VIDEO[payload.duration]
+    required_credits = _motion_credit_cost(payload.duration, payload.videoCount)
     if required_credits > user.credits:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -2253,7 +2265,7 @@ async def create_motion_generation(
         quality=payload.resolution,
         job_type="motion",
         reserved_credit_cost=required_credits,
-        credit_cost_per_look=COST_PER_LOOK["1080p"],
+        credit_cost_per_look=credit_cost_per_video,
     )
 
     _schedule_motion_generation_job(
