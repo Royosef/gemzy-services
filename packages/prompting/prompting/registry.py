@@ -573,6 +573,37 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
             if size_text:
                 parts.append(f"\nJEWELRY SIZE: {size_label}\n{size_text}")
 
+        for item_index, item in enumerate(items[1:], start=2):
+            item_type = _normalize_jewelry_type_label(
+                item.get("type"), aliases, mapping
+            )
+            if item_type:
+                item_type_text = (
+                    _resolve_option_selection(
+                        mapping.get("jewelry", {}), item_type
+                    )
+                    or {}
+                ).get("prompt", "")
+                if item_type_text:
+                    parts.append(
+                        f"\nJEWELRY ITEM {item_index} TYPE: {item_type}\n"
+                        f"{item_type_text}"
+                    )
+
+            item_size = _normalize_size_label(item.get("size"))
+            if item_size:
+                item_size_text = (
+                    _resolve_option_selection(
+                        mapping.get("jewelry_size", {}), item_size
+                    )
+                    or {}
+                ).get("prompt", "")
+                if item_size_text:
+                    parts.append(
+                        f"\nJEWELRY ITEM {item_index} SIZE: {item_size}\n"
+                        f"{item_size_text}"
+                    )
+
         camera = style.get("camera") or style.get("camera_style")
         resolved_camera = _resolve_option_selection(mapping.get("camera", {}), str(camera or ""))
         camera_text = (resolved_camera or {}).get("prompt", "")
@@ -782,6 +813,24 @@ def _render_pure_jewelry_sections(definition: dict[str, Any], payload: dict[str,
     size_prompts = definition.get("size_prompts") or {}
     if size in size_prompts:
         parts.append(f"\nJEWELRY SIZE: {size}\n{size_prompts[size]}")
+
+    type_aliases = definition.get("type_aliases") or {}
+    for item_index, item in enumerate(items[1:], start=2):
+        item_type = _normalize_pure_jewelry_type(
+            str(item.get("type") or "").strip(), type_aliases
+        )
+        if item_type in type_prompts:
+            parts.append(
+                f"\nJEWELRY ITEM {item_index} TYPE: {item_type}\n"
+                f"{type_prompts[item_type]}"
+            )
+
+        item_size = _normalize_size_label(item.get("size"))
+        if item_size in size_prompts:
+            parts.append(
+                f"\nJEWELRY ITEM {item_index} SIZE: {item_size}\n"
+                f"{size_prompts[item_size]}"
+            )
 
     if config:
         for category_id, category_name, options in config.get("categories", []):

@@ -29,6 +29,7 @@ class GenerationRunner(Protocol):
         product_images: Iterable[bytes],
         model_image: bytes,
         product_image_mime_types: Iterable[str] | None = None,
+        product_image_labels: Iterable[str] | None = None,
         model_image_mime_type: str | None = None,
         aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
         look_index: int,
@@ -90,6 +91,7 @@ async def _generate_single_look(
     product_images: list[bytes],
     model_image: bytes,
     product_image_mime_types: list[str],
+    product_image_labels: list[str],
     model_image_mime_type: str | None,
     aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
     look_index: int,
@@ -100,6 +102,7 @@ async def _generate_single_look(
         product_images=product_images,
         model_image=model_image,
         product_image_mime_types=product_image_mime_types,
+        product_image_labels=product_image_labels,
         model_image_mime_type=model_image_mime_type,
         aspect=aspect,
         look_index=look_index,
@@ -142,6 +145,7 @@ async def generate_looks(
     product_images: list[bytes],
     model_image: bytes,
     product_image_mime_types: list[str],
+    product_image_labels: list[str] | None = None,
     model_image_mime_type: str | None,
     aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
 ) -> list[bytes]:
@@ -160,6 +164,7 @@ async def generate_looks(
                     product_images=product_images,
                     model_image=model_image,
                     product_image_mime_types=product_image_mime_types,
+                    product_image_labels=product_image_labels or [],
                     model_image_mime_type=model_image_mime_type,
                     aspect=aspect,
                     look_index=index,
@@ -178,6 +183,7 @@ async def generate_looks(
                 product_images=product_images,
                 model_image=model_image,
                 product_image_mime_types=product_image_mime_types,
+                product_image_labels=product_image_labels or [],
                 model_image_mime_type=model_image_mime_type,
                 aspect=aspect,
                 look_index=index,
@@ -209,6 +215,20 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
     try:
         product_images: List[bytes] = [decode_upload_image(upload.base64) for upload in request.uploads]
         product_image_mime_types = [upload.mimeType or "image/png" for upload in request.uploads]
+        items_by_upload_id = {item.uploadId: item for item in request.items}
+        product_image_labels: list[str] = []
+        for index, upload in enumerate(request.uploads):
+            item = items_by_upload_id.get(upload.id)
+            if item is None:
+                product_image_labels.append("")
+                continue
+            details = " ".join(
+                value.strip()
+                for value in (item.size, item.type)
+                if value and value.strip()
+            )
+            label = f"Jewelry reference {index + 1}"
+            product_image_labels.append(f"{label}: {details}" if details else label)
         
         task_type = request.style.get("task_type", request.model.slug) 
         is_image_edit = (
@@ -271,6 +291,7 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
             product_images=product_images,
             model_image=model_image,
             product_image_mime_types=product_image_mime_types,
+            product_image_labels=product_image_labels,
             model_image_mime_type=model_image_mime_type,
             aspect=request.aspect,
         )

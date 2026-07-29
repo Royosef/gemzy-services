@@ -104,7 +104,31 @@ def test_prompt_includes_per_item_type_guidance():
 
     assert "JEWELRY TYPE: Necklace" in prompt
     assert "Jewelry worn around the neck against the chest or collarbone." in prompt
-    assert "Ring (Item 2)" not in prompt
+    assert "JEWELRY ITEM 2 TYPE: Ring" in prompt
+    assert "JEWELRY ITEM 2 SIZE: Medium" in prompt
+
+
+def test_v52_pure_jewelry_prompt_includes_each_item_type_and_size():
+    req = _base_request()
+    req.model.slug = "pure-jewelry"
+    req.style.update(
+        {
+            "task_type": "pure-jewelry",
+            "public_version_key": "v5.2",
+            "style_type": "pure-studio",
+        }
+    )
+    req.items = [
+        GenerationItem(id="i1", type="Necklace", size="Small", uploadId="u1"),
+        GenerationItem(id="i2", type="Ring", size="Medium", uploadId="u2"),
+    ]
+
+    prompt = build_prompts(req)[0]
+
+    assert "JEWELRY TYPE: Necklace" in prompt
+    assert "JEWELRY SIZE: Small" in prompt
+    assert "JEWELRY ITEM 2 TYPE: Ring" in prompt
+    assert "JEWELRY ITEM 2 SIZE: Medium" in prompt
 
 
 def test_prompt_includes_medium_size_guidance():

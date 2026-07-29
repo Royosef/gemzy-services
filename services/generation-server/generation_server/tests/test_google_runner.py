@@ -161,6 +161,7 @@ def test_generate_labels_jewelry_and_model_references_separately():
             product_images=[b"foo"],
             model_image=b"bar",
             product_image_mime_types=["image/jpeg"],
+            product_image_labels=["Jewelry reference 1: Small Necklace"],
             model_image_mime_type="image/png",
             aspect="1:1",
             look_index=0,
@@ -180,6 +181,11 @@ def test_generate_labels_jewelry_and_model_references_separately():
         and "Do not borrow persona traits" in text
         for text in texts
     )
+    assert any(
+        text.startswith("Jewelry reference 1: Small Necklace.")
+        and "immediately following image" in text
+        for text in texts
+    )
     assert len(blobs) == 2
     assert blobs[0].mime_type == "image/jpeg"
     assert blobs[0].data == b"foo"
@@ -187,7 +193,7 @@ def test_generate_labels_jewelry_and_model_references_separately():
     assert blobs[1].data == b"bar"
 
 
-def test_generate_without_model_image_does_not_add_persona_disambiguation_text():
+def test_generate_without_model_image_still_labels_jewelry_references():
     response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
     client = DummyClient(response)
 
@@ -204,6 +210,7 @@ def test_generate_without_model_image_does_not_add_persona_disambiguation_text()
             product_images=[b"foo"],
             model_image=b"",
             product_image_mime_types=["image/jpeg"],
+            product_image_labels=["Jewelry reference 1: Medium Ring"],
             aspect="1:1",
             look_index=0,
         )
@@ -216,7 +223,53 @@ def test_generate_without_model_image_does_not_add_persona_disambiguation_text()
     ]
 
     assert not any("authoritative model/persona reference" in text for text in texts)
-    assert not any("jewelry/product inputs only" in text for text in texts)
+    assert any("jewelry/product inputs only" in text for text in texts)
+    assert any("Jewelry reference 1: Medium Ring" in text for text in texts)
+
+
+def test_generate_keeps_multiple_jewelry_labels_adjacent_to_their_images():
+    response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
+    client = DummyClient(response)
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        model="gemini-test",
+        client=client,
+    )
+
+    asyncio.run(
+        runner.generate(
+            prompt="prompt",
+            negative_prompt="",
+            product_images=[b"necklace", b"ring"],
+            model_image=b"",
+            product_image_mime_types=["image/jpeg", "image/png"],
+            product_image_labels=[
+                "Jewelry reference 1: Small Necklace",
+                "Jewelry reference 2: Medium Ring",
+            ],
+            aspect="1:1",
+            look_index=0,
+        )
+    )
+
+    parts = client.calls[0]["contents"][0].parts
+    necklace_label_index = next(
+        index
+        for index, part in enumerate(parts)
+        if (getattr(part, "text", "") or "").startswith(
+            "Jewelry reference 1: Small Necklace."
+        )
+    )
+    ring_label_index = next(
+        index
+        for index, part in enumerate(parts)
+        if (getattr(part, "text", "") or "").startswith(
+            "Jewelry reference 2: Medium Ring."
+        )
+    )
+
+    assert parts[necklace_label_index + 1].inline_data.data == b"necklace"
+    assert parts[ring_label_index + 1].inline_data.data == b"ring"
 
 
 def test_generate_reads_top_level_response_parts():

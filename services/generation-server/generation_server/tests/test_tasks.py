@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from generation_server import tasks
 from generation_server.models import (
     GenerationDimensions,
+    GenerationItem,
     GenerationJobPayload,
     GenerationModel,
     GenerationRequest,
@@ -145,6 +146,7 @@ class _Runner:
         product_images,
         model_image: bytes,
         product_image_mime_types=None,
+        product_image_labels=None,
         model_image_mime_type=None,
         aspect,
         look_index: int,
@@ -156,6 +158,7 @@ class _Runner:
                 "product_images": list(product_images),
                 "model_image": model_image,
                 "product_image_mime_types": list(product_image_mime_types or []),
+                "product_image_labels": list(product_image_labels or []),
                 "model_image_mime_type": model_image_mime_type,
                 "aspect": aspect,
                 "look_index": look_index,
@@ -359,6 +362,51 @@ async def test_pure_jewelry_generation_does_not_forward_model_image(
     assert len(runner.calls) == 1
     assert runner.calls[0]["product_images"] == [b"source-image"]
     assert runner.calls[0]["model_image"] == b""
+
+
+@pytest.mark.anyio
+async def test_generation_labels_each_upload_with_its_matching_item_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _Runner()
+
+    async def _safe_send_event(_settings, _job, _event):
+        return None
+
+    monkeypatch.setattr(tasks, "get_settings", _settings)
+    monkeypatch.setattr(tasks, "_get_runner", lambda: runner)
+    monkeypatch.setattr(tasks, "safe_send_event", _safe_send_event)
+
+    payload = _pure_jewelry_payload()
+    payload.request.uploads.append(
+        GenerationUpload(
+            id="upload-2",
+            uri="https://example.com/ring.png",
+            base64="cmluZy1pbWFnZQ==",
+            mimeType="image/png",
+        )
+    )
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Necklace",
+            size="Small",
+            uploadId="upload-1",
+        ),
+        GenerationItem(
+            id="item-2",
+            type="Ring",
+            size="Medium",
+            uploadId="upload-2",
+        ),
+    ]
+
+    await tasks.process_generation_job(payload)
+
+    assert runner.calls[0]["product_image_labels"] == [
+        "Jewelry reference 1: Small Necklace",
+        "Jewelry reference 2: Medium Ring",
+    ]
     assert runner.calls[0]["model_image_mime_type"] is None
 
 
@@ -421,6 +469,7 @@ async def test_multi_look_generation_can_run_in_parallel_while_preserving_result
             product_images,
             model_image: bytes,
             product_image_mime_types=None,
+            product_image_labels=None,
             model_image_mime_type=None,
             aspect,
             look_index: int,
@@ -432,6 +481,7 @@ async def test_multi_look_generation_can_run_in_parallel_while_preserving_result
                     "product_images": list(product_images),
                     "model_image": model_image,
                     "product_image_mime_types": list(product_image_mime_types or []),
+                    "product_image_labels": list(product_image_labels or []),
                     "model_image_mime_type": model_image_mime_type,
                     "aspect": aspect,
                     "look_index": look_index,

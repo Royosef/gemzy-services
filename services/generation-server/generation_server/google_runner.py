@@ -86,6 +86,7 @@ class GoogleGeminiRunner:
         product_images: Iterable[bytes],
         model_image: bytes,
         product_image_mime_types: Iterable[str] | None = None,
+        product_image_labels: Iterable[str] | None = None,
         model_image_mime_type: str | None = None,
         aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
         look_index: int,
@@ -98,6 +99,7 @@ class GoogleGeminiRunner:
                 tuple(product_images),
                 model_image,
                 tuple(product_image_mime_types or ()),
+                tuple(product_image_labels or ()),
                 model_image_mime_type,
                 aspect,
                 look_index,
@@ -112,6 +114,7 @@ class GoogleGeminiRunner:
         product_images: Sequence[bytes],
         model_image: bytes,
         product_image_mime_types: Sequence[str],
+        product_image_labels: Sequence[str],
         model_image_mime_type: str | None,
         aspect: Literal["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "9:16", "16:9", "21:9"],
         look_index: int,
@@ -122,6 +125,7 @@ class GoogleGeminiRunner:
             product_images=product_images,
             model_image=model_image,
             product_image_mime_types=product_image_mime_types,
+            product_image_labels=product_image_labels,
             model_image_mime_type=model_image_mime_type,
             look_index=look_index,
         )
@@ -277,6 +281,7 @@ class GoogleGeminiRunner:
         product_images: Sequence[bytes],
         model_image: bytes,
         product_image_mime_types: Sequence[str],
+        product_image_labels: Sequence[str],
         model_image_mime_type: str | None,
         look_index: int,
     ) -> Sequence[Any]:
@@ -298,11 +303,15 @@ class GoogleGeminiRunner:
             )
         )
 
-        if model_image:
+        has_labeled_product_images = any(
+            label.strip() for label in product_image_labels
+        )
+        if has_labeled_product_images or model_image:
             prompt_parts.append(
                 genai_types.Part(
                     text=(
-                        "The next image references are jewelry/product inputs only. "
+                        "The following numbered image references are jewelry/product inputs only. "
+                        "Treat each label as authoritative metadata for the image immediately after it. "
                         "Use them only for jewelry design, gemstones, materials, scale, "
                         "and placement cues. If any people, faces, bodies, hair, clothing, "
                         "or persona traits appear in those jewelry images, ignore them."
@@ -313,6 +322,17 @@ class GoogleGeminiRunner:
         for index, product_image in enumerate(product_images):
             if not product_image:
                 continue
+            label = (
+                product_image_labels[index].strip()
+                if index < len(product_image_labels) and product_image_labels[index].strip()
+                else ""
+            )
+            if label:
+                prompt_parts.append(
+                    genai_types.Part(
+                        text=f"{label}. The immediately following image is this jewelry reference."
+                    )
+                )
             mime_type = (
                 product_image_mime_types[index]
                 if index < len(product_image_mime_types) and product_image_mime_types[index]
