@@ -1,6 +1,10 @@
 # Gemzy Moments API Service
 
-FastAPI backend for Gemzy Moments.
+> **Archived legacy service.** This code documents the retired Moments mobile
+> backend. Do not deploy it against the Gemzy production database after the
+> legacy `people` and `moments` schemas are removed. Read `ARCHIVED.md` first.
+
+FastAPI backend retained for legacy Moments mobile reference.
 
 ## Included
 

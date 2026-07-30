@@ -5,7 +5,7 @@ Shared backend monorepo for Gemzy services.
 ## Layout
 
 - `services/gemzy-api`: Core Gemzy API, backend docs, deploy scripts, and SQL assets.
-- `services/gemzy-moments-api`: Gemzy Moments API and SQL assets.
+- `services/gemzy-moments-api`: Archived Moments mobile API and SQL assets; reference only.
 - `services/generation-server`: Shared image-generation and planner service used by both APIs.
 - `packages/prompting`: Shared prompt registry helpers and prompt-definition data.
 
@@ -35,18 +35,16 @@ pip install -r requirements.dev.txt
 uvicorn generation_server.app:app --host 0.0.0.0 --port 8100 --reload
 ```
 
-### Gemzy Moments API
+### Archived Gemzy Moments API
 
-```sh
-cd services/gemzy-moments-api
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.dev.txt
-uvicorn server.main:app --reload
-```
+`services/gemzy-moments-api` is retained only as legacy Moments mobile
+reference. Do not deploy it against Gemzy production. Moments Web uses its own
+Supabase project and migrations from the `moments-web-app` repository. See
+`services/gemzy-moments-api/ARCHIVED.md` before using any asset in that
+directory.
 
 ## Notes
 
-- `GENERATION_SERVER_URL` should point both API services at `services/generation-server`.
+- `GENERATION_SERVER_URL` points the active Gemzy API at `services/generation-server`.
 - Secrets are intentionally not committed here. Copy the service-level `.env.example` files and fill values locally.
 - Docker builds now run from the repo root with service-specific Dockerfiles.
