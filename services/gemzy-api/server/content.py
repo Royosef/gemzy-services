@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .auth import get_current_user, get_optional_current_user
 from .schemas import (
@@ -48,6 +48,7 @@ from .storage import (
 _COLLECTIONS_BUCKET_CACHE = None
 _PUBLIC_COLLECTIONS_BUCKET_CACHE = None
 _PUBLIC_VARIANT_URL_CACHE: dict[str, tuple[str | None, str | None]] = {}
+_INVALID_PUBLIC_VARIANT_SOURCES: set[str] = set()
 logger = logging.getLogger(__name__)
 
 collections_router = APIRouter(prefix="/collections", tags=["collections"])
@@ -73,6 +74,7 @@ COLLECTIONS_CACHE_CONTROL = os.getenv(
 )
 COLLECTIONS_MAX_UPLOAD_BYTES = int(os.getenv("GCS_UPLOAD_MAX_BYTES", "26214400"))
 COLLECTIONS_OWNER_METADATA_KEY = os.getenv("GCS_OWNER_METADATA_KEY", "appUserId")
+COLLECTIONS_MAX_OBJECT_NAME_BYTES = 1024
 
 DEFAULT_UNSAVED_COLLECTION_NAME = os.getenv(
     "DEFAULT_UNSAVED_COLLECTION_NAME", "Draft Images"
@@ -227,7 +229,11 @@ def _build_collection_public_asset_url(object_path: str) -> str:
 def _resolve_public_collection_variants(
     normalized_path: str,
 ) -> tuple[str | None, str | None]:
-    cached = _PUBLIC_VARIANT_URL_CACHE.get(normalized_path)
+    normalized = _normalize_storage_path(normalized_path)
+    if not normalized:
+        return None, None
+
+    cached = _PUBLIC_VARIANT_URL_CACHE.get(normalized)
     if cached is not None:
         return cached
 
@@ -235,7 +241,7 @@ def _resolve_public_collection_variants(
     if bucket is None:
         return None, None
 
-    variant_paths = _collection_variant_paths(normalized_path)
+    variant_paths = _collection_variant_paths(normalized)
     try:
         preview_blob = bucket.blob(variant_paths["preview"])
         full_blob = bucket.blob(variant_paths["viewer-full"])
@@ -245,7 +251,7 @@ def _resolve_public_collection_variants(
         logger.exception(
             "Failed checking public collection variants",
             extra={
-                "storage_path": normalized_path,
+                "storage_path": normalized,
                 "preview_path": variant_paths["preview"],
                 "full_path": variant_paths["viewer-full"],
             },
@@ -265,15 +271,15 @@ def _resolve_public_collection_variants(
     )
     resolved = (preview_url or full_url, full_url or preview_url)
     if resolved[0] or resolved[1]:
-        _PUBLIC_VARIANT_URL_CACHE[normalized_path] = resolved
+        _PUBLIC_VARIANT_URL_CACHE[normalized] = resolved
     return resolved
 
 
 def _generate_public_collection_variants(
     storage_path: str, content_type: str | None = None
 ) -> None:
-    normalized = storage_path.strip().lstrip("/")
-    if not normalized:
+    normalized = _normalize_storage_path(storage_path)
+    if not normalized or normalized in _INVALID_PUBLIC_VARIANT_SOURCES:
         return
 
     source_bucket = _maybe_get_collections_bucket()
@@ -312,6 +318,16 @@ def _generate_public_collection_variants(
         image_bytes = source_blob.download_as_bytes()
         image = Image.open(io.BytesIO(image_bytes))
         image = ImageOps.exif_transpose(image)
+    except UnidentifiedImageError:
+        _INVALID_PUBLIC_VARIANT_SOURCES.add(normalized)
+        logger.warning(
+            "Skipping invalid collection image object during variant generation: "
+            "storage_path=%s bytes=%s content_type=%s",
+            normalized,
+            len(image_bytes),
+            content_type,
+        )
+        return
     except Exception:
         logger.exception(
             "Failed downloading or decoding collection source image for variants",
@@ -531,7 +547,7 @@ def _normalize_storage_path(value: str | None) -> str | None:
     if not trimmed:
         return None
 
-    # Handle gs://bucket/path
+    # Handle gs://bucket/path.
     if trimmed.startswith("gs://"):
         without_scheme = trimmed[5:]
         parts = without_scheme.split("/", 1)
@@ -539,11 +555,19 @@ def _normalize_storage_path(value: str | None) -> str | None:
 
     parsed = urlparse(trimmed)
     if parsed.scheme in {"http", "https"}:
+        if not _is_collection_storage_url(trimmed):
+            return None
         trimmed = parsed.path.lstrip("/")
+    elif parsed.scheme:
+        # data:, blob:, file:, and other URI schemes are not GCS object names.
+        return None
     else:
         trimmed = trimmed.lstrip("/")
 
     trimmed = _strip_known_collection_bucket_prefix(trimmed)
+
+    if len(trimmed.encode("utf-8")) > COLLECTIONS_MAX_OBJECT_NAME_BYTES:
+        return None
 
     return trimmed or None
 

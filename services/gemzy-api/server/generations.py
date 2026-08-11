@@ -818,12 +818,23 @@ def _decode_generation_image(result: GenerationResultPayload) -> bytes:
         candidate = candidate.split(",", 1)[1]
 
     try:
-        return base64.b64decode(candidate)
+        image_bytes = base64.b64decode(candidate, validate=True)
     except Exception as exc:  # pragma: no cover - malformed worker payload
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid generation image payload",
         ) from exc
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.verify()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Generation result is not a valid image",
+        ) from exc
+
+    return image_bytes
 
 
 def _is_missing_model_columns(error: APIError) -> bool:

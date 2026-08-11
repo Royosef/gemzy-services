@@ -1731,3 +1731,12 @@ def test_persist_generation_result_refreshes_draft_cover(
     assert inserted_payloads[0]["metadata"]["size"] == 3
     assert inserted_payloads[0]["metadata"]["source"] == "generation"
     assert inserted_payloads[0]["metadata"]["jobId"] == "job-1"
+
+
+def test_decode_generation_image_rejects_base64_like_prompt_text() -> None:
+    result = generations.GenerationResultPayload(
+        base64="Hereisacloseupstudioshotofthewomanfromtheimagewearingtheringfromtheimage"
+    )
+
+    with pytest.raises(HTTPException, match="not a valid image"):
+        generations._decode_generation_image(result)

@@ -403,12 +403,10 @@ class GoogleGeminiRunner:
                     inline = getattr(part, "inline_data", None)
                     if inline and getattr(inline, "data", None):
                         return inline.data
-                    if getattr(part, "text", None):
-                        try:
-                            parsed = base64.b64decode(part.text)
-                        except Exception:  # pragma: no cover - best effort fallback
-                            continue
-                        return parsed
+                    # Image responses are delivered as inline_data. Never
+                    # interpret an arbitrary text response as base64: ordinary
+                    # prompt-like text can consist entirely of base64 alphabet
+                    # characters and decode into convincing but invalid bytes.
         return None
 
     def _extract_block_reason(self, response: object) -> str | None:

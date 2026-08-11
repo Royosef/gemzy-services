@@ -322,6 +322,33 @@ def test_generate_missing_payload_raises():
         )
 
 
+def test_generate_does_not_decode_prompt_text_as_an_image():
+    response = DummyResponse(
+        [
+            DummyPart(
+                text="Hereisacloseupstudioshotofthewomanfromtheimagewearingtheringfromtheimage"
+            )
+        ]
+    )
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        model="gemini-test",
+        client=DummyClient(response),
+    )
+
+    with pytest.raises(GoogleGeminiError, match="did not include an image"):
+        asyncio.run(
+            runner.generate(
+                prompt="prompt",
+                negative_prompt="",
+                product_images=[],
+                model_image=b"",
+                aspect="4:5",
+                look_index=0,
+            )
+        )
+
+
 def test_generate_retries_retryable_quota_errors(monkeypatch: pytest.MonkeyPatch):
     response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
     client = DummyClient(

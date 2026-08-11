@@ -323,6 +323,97 @@ def test_normalize_storage_path_strips_known_bucket_from_gcs_url(
     assert normalized == "user-123/items/photo.png"
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+        "blob:https://app.gemzy.co/generated-image",
+        "https://example.com/external/photo.png",
+    ],
+)
+def test_normalize_storage_path_rejects_non_storage_uris(
+    monkeypatch: pytest.MonkeyPatch,
+    uri: str,
+) -> None:
+    monkeypatch.setattr(content, "COLLECTIONS_APP_BUCKET", "app.gemzy.co")
+    monkeypatch.setattr(content, "COLLECTIONS_PUBLIC_BUCKET", "public.gemzy.co")
+
+    assert content._normalize_storage_path(uri) is None
+
+
+def test_public_collection_variants_ignore_data_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        content,
+        "_maybe_get_public_collections_bucket",
+        lambda: pytest.fail("data URI must not reach storage"),
+    )
+    data_uri = "data:image/png;base64," + ("A" * 2048)
+
+    assert content._resolve_public_collection_variants(data_uri) == (None, None)
+
+
+def test_generate_public_collection_variants_ignores_data_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        content,
+        "_maybe_get_collections_bucket",
+        lambda: pytest.fail("data URI must not reach storage"),
+    )
+    data_uri = "data:image/png;base64," + ("A" * 2048)
+
+    content._generate_public_collection_variants(data_uri)
+
+
+def test_generate_public_collection_variants_skips_known_invalid_image(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _SourceBlob:
+        downloads = 0
+
+        def download_as_bytes(self) -> bytes:
+            self.downloads += 1
+            return b"not-an-image"
+
+    class _SourceBucket:
+        blob_instance = _SourceBlob()
+
+        def blob(self, _path: str) -> _SourceBlob:
+            return self.blob_instance
+
+    class _DestinationBlob:
+        def exists(self) -> bool:
+            return False
+
+    class _DestinationBucket:
+        def blob(self, _path: str) -> _DestinationBlob:
+            return _DestinationBlob()
+
+    storage_path = "user-123/items/corrupt.png"
+    content._INVALID_PUBLIC_VARIANT_SOURCES.discard(storage_path)
+    source_bucket = _SourceBucket()
+    monkeypatch.setattr(
+        content,
+        "_maybe_get_collections_bucket",
+        lambda: source_bucket,
+    )
+    monkeypatch.setattr(
+        content,
+        "_maybe_get_public_collections_bucket",
+        lambda: _DestinationBucket(),
+    )
+
+    with caplog.at_level("WARNING"):
+        content._generate_public_collection_variants(storage_path, "image/png")
+        content._generate_public_collection_variants(storage_path, "image/png")
+
+    assert source_bucket.blob_instance.downloads == 1
+    assert "Skipping invalid collection image object" in caplog.text
+
+
 def test_resolve_collection_image_variants_resigns_gcs_urls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
