@@ -39,7 +39,7 @@ class Settings:
     result_poll_interval: float
     output_dir: str
     google_gemini_api_key: Optional[str]
-    google_gemini_model: Optional[str]
+    google_gemini_models: tuple[str, ...]
     google_gemini_timeout: float
     google_gemini_use_vertex_ai: bool
     google_cloud_project: Optional[str]
@@ -66,7 +66,14 @@ class Settings:
             raise RuntimeError("Unsupported GENERATION_PROVIDER value")
 
         google_gemini_api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
-        google_gemini_model = os.getenv("GOOGLE_GEMINI_MODEL")
+        google_gemini_models = tuple(
+            model.strip()
+            for model in os.getenv(
+                "GOOGLE_GEMINI_MODELS",
+                "gemini-3-pro-image,gemini-3.1-flash-image",
+            ).split(",")
+            if model.strip()
+        )
         google_gemini_timeout = float(os.getenv("GOOGLE_GEMINI_TIMEOUT", "120"))
         google_gemini_use_vertex_ai = _env_flag(
             "GOOGLE_GEMINI_USE_VERTEX_AI",
@@ -85,8 +92,8 @@ class Settings:
                 raise RuntimeError(
                     "GOOGLE_GEMINI_API_KEY is required when GENERATION_PROVIDER=google_gemini"
                 )
-            if not google_gemini_model:
-                google_gemini_model = "gemini-2.5-flash-image"
+            if not google_gemini_models:
+                raise RuntimeError("GOOGLE_GEMINI_MODELS must contain at least one model")
         default_job_look_concurrency = "1"
 
         return cls(
@@ -111,7 +118,7 @@ class Settings:
             result_poll_interval=float(os.getenv("GENERATION_RESULT_POLL", "0.5")),
             output_dir=os.getenv("GENERATION_OUTPUT_DIR", "./outputs"),
             google_gemini_api_key=google_gemini_api_key,
-            google_gemini_model=google_gemini_model,
+            google_gemini_models=google_gemini_models,
             google_gemini_timeout=google_gemini_timeout,
             google_gemini_use_vertex_ai=google_gemini_use_vertex_ai,
             google_cloud_project=google_cloud_project,

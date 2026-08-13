@@ -38,7 +38,7 @@ def _settings() -> Settings:
         result_poll_interval=0.5,
         output_dir="./outputs",
         google_gemini_api_key="key",
-        google_gemini_model="model",
+        google_gemini_models=("model",),
         google_gemini_timeout=1,
         google_gemini_use_vertex_ai=False,
         google_cloud_project=None,

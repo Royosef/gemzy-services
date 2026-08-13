@@ -101,6 +101,11 @@ def get_job(job_id: str) -> Optional[GenerationJob]:
         return _JOBS.get(job_id)
 
 
+def delete_job(job_id: str) -> bool:
+    with _LOCK:
+        return _JOBS.pop(job_id, None) is not None
+
+
 def to_response(job: GenerationJob) -> dict:
     payload = {
         "id": job.id,
@@ -127,6 +132,8 @@ def to_response(job: GenerationJob) -> dict:
 
 def mark_started(job: GenerationJob) -> None:
     with _LOCK:
+        if job.status in {"completed", "failed"}:
+            return
         job.status = "in_progress"
         job.touch()
 
@@ -145,6 +152,8 @@ def add_result(job: GenerationJob, result: GenerationResultPayload) -> None:
 
 def update_progress(job: GenerationJob, progress: float, completed: Optional[int] = None) -> None:
     with _LOCK:
+        if job.status in {"completed", "failed"}:
+            return
         job.progress = max(0.0, min(1.0, progress))
         if completed is not None:
             job.completed_looks = min(job.total_looks, max(job.completed_looks, completed))
@@ -153,6 +162,8 @@ def update_progress(job: GenerationJob, progress: float, completed: Optional[int
 
 def mark_completed(job: GenerationJob) -> None:
     with _LOCK:
+        if job.status == "failed":
+            return
         job.status = "completed"
         job.progress = 1.0
         job.completed_looks = max(job.completed_looks, job.total_looks)

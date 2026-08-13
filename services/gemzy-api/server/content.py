@@ -320,7 +320,7 @@ def _generate_public_collection_variants(
         image = ImageOps.exif_transpose(image)
     except UnidentifiedImageError:
         _INVALID_PUBLIC_VARIANT_SOURCES.add(normalized)
-        logger.warning(
+        logger.info(
             "Skipping invalid collection image object during variant generation: "
             "storage_path=%s bytes=%s content_type=%s",
             normalized,
@@ -328,7 +328,15 @@ def _generate_public_collection_variants(
             content_type,
         )
         return
-    except Exception:
+    except Exception as exc:
+        if getattr(exc, "code", None) == 404:
+            _INVALID_PUBLIC_VARIANT_SOURCES.add(normalized)
+            logger.warning(
+                "Skipping missing collection image object during variant generation: "
+                "storage_path=%s",
+                normalized,
+            )
+            return
         logger.exception(
             "Failed downloading or decoding collection source image for variants",
             extra={"storage_path": normalized},
@@ -558,8 +566,14 @@ def _normalize_storage_path(value: str | None) -> str | None:
         if not _is_collection_storage_url(trimmed):
             return None
         trimmed = parsed.path.lstrip("/")
-    elif parsed.scheme:
-        # data:, blob:, file:, and other URI schemes are not GCS object names.
+    elif parsed.scheme and (
+        "://" in trimmed
+        or parsed.scheme.lower()
+        in {"data", "blob", "file", "content", "ph", "assets-library", "asset", "app", "s3"}
+    ):
+        # Known client/public URI schemes are not GCS object names. A colon is
+        # otherwise valid in an object key; guest generation keys intentionally
+        # start with `guest:<job-id>/...`.
         return None
     else:
         trimmed = trimmed.lstrip("/")
@@ -590,7 +604,11 @@ def _select_collection_storage_path(
         return normalized_external
     if _looks_like_collection_storage_path(normalized_image):
         return normalized_image
-    return normalized_external or normalized_image
+    # Legacy rows used an opaque external_id when the source was a remote or
+    # device-local URI. That identifier is not a GCS object name. Every object
+    # written by the collections service lives below a user/guest prefix, so a
+    # pathless value must not be sent to GCS or the public-variant backfill.
+    return None
 
 
 def _has_public_scheme(uri: str) -> bool:

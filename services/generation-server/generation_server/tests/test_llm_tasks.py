@@ -26,7 +26,7 @@ def _settings(*, use_vertex_ai: bool) -> Settings:
         result_poll_interval=0.5,
         output_dir="./outputs",
         google_gemini_api_key="key" if not use_vertex_ai else None,
-        google_gemini_model="gemini-2.5-flash",
+        google_gemini_models=("gemini-2.5-flash",),
         google_gemini_timeout=1,
         google_gemini_use_vertex_ai=use_vertex_ai,
         google_cloud_project="demo-project" if use_vertex_ai else None,

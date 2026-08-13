@@ -323,6 +323,25 @@ def test_normalize_storage_path_strips_known_bucket_from_gcs_url(
     assert normalized == "user-123/items/photo.png"
 
 
+def test_normalize_storage_path_preserves_guest_generation_object_key() -> None:
+    path = "guest:job-123/generations/job-123/result.png"
+
+    assert content._normalize_storage_path(path) == path
+
+
+def test_select_collection_storage_path_rejects_legacy_pathless_ids() -> None:
+    legacy_id = "68de846a605349818400fb13ea9ee7f6"
+
+    assert content._select_collection_storage_path(legacy_id, legacy_id) is None
+
+
+def test_select_collection_storage_path_prefers_real_path_over_legacy_id() -> None:
+    assert content._select_collection_storage_path(
+        "68de846a605349818400fb13ea9ee7f6",
+        "user-123/generations/job-123/result.png",
+    ) == "user-123/generations/job-123/result.png"
+
+
 @pytest.mark.parametrize(
     "uri",
     [

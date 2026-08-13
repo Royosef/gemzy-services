@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -276,9 +277,16 @@ def test_generation_request_forwards_payload(monkeypatch: pytest.MonkeyPatch, cl
     monkeypatch.setenv("GENERATION_SERVER_ENDPOINT", "/submit")
     monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
     monkeypatch.setenv("GENERATION_SHARED_SECRET", "secret")
+    monkeypatch.delenv("GENERATION_SERVER_TIMEOUT", raising=False)
 
     mock_client = _MockAsyncClient()
-    monkeypatch.setattr("server.generations.httpx.AsyncClient", lambda *a, **kw: mock_client)
+    configured_timeouts: list[float] = []
+
+    def _client_factory(*_args: Any, **kwargs: Any) -> _MockAsyncClient:
+        configured_timeouts.append(float(kwargs["timeout"]))
+        return mock_client
+
+    monkeypatch.setattr("server.generations.httpx.AsyncClient", _client_factory)
 
     response = client.post("/generations", json=generation_payload)
 
@@ -304,6 +312,129 @@ def test_generation_request_forwards_payload(monkeypatch: pytest.MonkeyPatch, cl
     assert forwarded["user"]["id"] == "user-123"
     assert forwarded["request"]["model"]["imageUri"] == "https://cdn.example/model.png"
     assert headers["X-Generation-Secret"] == "secret"
+    assert configured_timeouts == [120.0]
+
+
+def test_ftue_guest_intent_wins_over_transitional_authenticated_session(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    generation_payload: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("GENERATION_SERVER_ENDPOINT", "/submit")
+    monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
+    monkeypatch.setattr(generations, "_check_guest_generation_quota", lambda _request: None)
+    mock_client = _MockAsyncClient()
+    monkeypatch.setattr(
+        "server.generations.httpx.AsyncClient",
+        lambda *args, **kwargs: mock_client,
+    )
+
+    payload = dict(generation_payload)
+    payload.update(
+        {
+            "generationServerUrl": None,
+            "style": {"task_type": "on-model", "onboarding_guest": "true"},
+            "aspect": "1:1",
+            "dims": {"w": 1080, "h": 1080},
+            "looks": generations.GUEST_GENERATION_LOOKS,
+            "quality": generations.GUEST_GENERATION_QUALITY,
+            "items": [
+                {
+                    "id": "item-1",
+                    "type": "ring",
+                    "size": "small",
+                    "uploadId": "upload-1",
+                }
+            ],
+        }
+    )
+
+    response = client.post("/generations", json=payload)
+
+    assert response.status_code == 200
+    forwarded_user = mock_client.calls[0][1]["user"]
+    assert forwarded_user["id"].startswith("guest:")
+    assert forwarded_user["id"] != "user-123"
+
+
+def test_ftue_guest_retry_allows_only_missing_look(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    generation_payload: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("GENERATION_SERVER_ENDPOINT", "/submit")
+    monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
+    monkeypatch.setattr(generations, "_check_guest_generation_quota", lambda _request: None)
+    mock_client = _MockAsyncClient()
+    monkeypatch.setattr(
+        "server.generations.httpx.AsyncClient",
+        lambda *args, **kwargs: mock_client,
+    )
+
+    payload = dict(generation_payload)
+    payload.update(
+        {
+            "generationServerUrl": None,
+            "style": {
+                "task_type": "on-model",
+                "onboarding_guest": "true",
+                "onboarding_guest_retry": "true",
+            },
+            "aspect": "1:1",
+            "dims": {"w": 1080, "h": 1080},
+            "looks": 1,
+            "quality": generations.GUEST_GENERATION_QUALITY,
+            "items": [
+                {
+                    "id": "item-1",
+                    "type": "ring",
+                    "size": "small",
+                    "uploadId": "upload-1",
+                }
+            ],
+        }
+    )
+
+    response = client.post("/generations", json=payload)
+
+    assert response.status_code == 200
+    forwarded_request = mock_client.calls[0][1]["request"]
+    assert forwarded_request["looks"] == 1
+    assert forwarded_request["style"]["onboarding_guest_retry"] == "true"
+
+
+def test_ftue_guest_request_cannot_customize_look_count_without_retry_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    generation_payload: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(generations, "_check_guest_generation_quota", lambda _request: None)
+    payload = dict(generation_payload)
+    payload.update(
+        {
+            "generationServerUrl": None,
+            "style": {"task_type": "on-model", "onboarding_guest": "true"},
+            "aspect": "1:1",
+            "dims": {"w": 1080, "h": 1080},
+            "looks": 1,
+            "quality": generations.GUEST_GENERATION_QUALITY,
+            "items": [
+                {
+                    "id": "item-1",
+                    "type": "ring",
+                    "size": "small",
+                    "uploadId": "upload-1",
+                }
+            ],
+        }
+    )
+
+    response = client.post("/generations", json=payload)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Sign up to customize image count."
 
 
 def test_adjust_profile_credits_retries_after_compare_and_set_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -857,6 +988,39 @@ def test_retrieve_generation_status(
     assert payload["progress"] == pytest.approx(
         payload["completedLooks"] / payload["totalLooks"]
     )
+
+
+def test_retrieve_generation_expires_stale_active_job(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    monkeypatch.setenv("GENERATION_STALE_TIMEOUT_SECONDS", "60")
+    job = generations.create_job("stale-job", "guest:stale-job", 2)
+    generations.mark_started(job)
+    job.updated_at = datetime.utcnow() - timedelta(seconds=61)
+
+    response = client.get("/generations/stale-job")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["errors"] == ["Generation timed out. Please try again."]
+
+
+def test_delete_failed_generation_removes_job(client: TestClient) -> None:
+    job = generations.create_job("failed-job", "user-123", 1)
+    generations.mark_failed(job, "Generation failed. Please try again.")
+
+    response = client.delete("/generations/failed-job")
+
+    assert response.status_code == 204
+    assert generations.get_job("failed-job") is None
+
+
+def test_delete_active_generation_is_rejected(client: TestClient) -> None:
+    generations.create_job("active-job", "user-123", 1)
+
+    response = client.delete("/generations/active-job")
+
+    assert response.status_code == 409
 
 
 def test_generation_server_errors_are_sanitized(
@@ -1699,9 +1863,16 @@ def test_persist_generation_result_refreshes_draft_cover(
             return _Table()
 
     refreshed: list[tuple[str, str | None]] = []
+    generated_variants: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr("server.generations._decode_generation_image", lambda _result: b"png")
     monkeypatch.setattr("server.generations._get_collections_bucket", lambda: _Bucket())
+    monkeypatch.setattr(
+        "server.generations._generate_public_collection_variants",
+        lambda path, content_type=None: generated_variants.append(
+            (path, content_type)
+        ),
+    )
     monkeypatch.setattr(
         "server.generations._resolve_collection_image_variants",
         lambda *_args, **_kwargs: ("https://preview.example/image.png", "https://view.example/image.png"),
@@ -1722,6 +1893,9 @@ def test_persist_generation_result_refreshes_draft_cover(
     assert result.collectionId == "draft-1"
     assert result.collectionItemId == "item-1"
     assert refreshed == [("draft-1", "user-1")]
+    assert len(generated_variants) == 1
+    assert generated_variants[0][0].startswith("user-1/generations/job-1/")
+    assert generated_variants[0][1] == "image/png"
     assert len(inserted_payloads) == 1
     assert inserted_payloads[0]["collection_id"] == "draft-1"
     assert inserted_payloads[0]["user_id"] == "user-1"

@@ -50,7 +50,7 @@ def _get_runner() -> GenerationRunner:
         if settings.provider == "google_gemini":
             _runner = GoogleGeminiRunner(
                 api_key=settings.google_gemini_api_key,
-                model=settings.google_gemini_model or "gemini-2.5-flash-image",
+                models=settings.google_gemini_models,
                 use_vertex_ai=settings.google_gemini_use_vertex_ai,
                 vertex_project=settings.google_cloud_project,
                 vertex_location=settings.google_cloud_location,

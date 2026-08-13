@@ -24,7 +24,8 @@ and incremental result delivery.
    - `GOOGLE_CLOUD_PROJECT`: Required when Vertex AI is enabled.
    - `GOOGLE_CLOUD_LOCATION`: Optional when Vertex AI is enabled. Defaults to
      `global`.
-    - `GOOGLE_GEMINI_MODEL` and `GOOGLE_GEMINI_TIMEOUT`: Optional tuning knobs.
+    - `GOOGLE_GEMINI_MODELS`: Comma-separated image models used round-robin for
+      generation requests. `GOOGLE_GEMINI_TIMEOUT` limits each provider call.
     - `GOOGLE_GEMINI_MAX_RETRIES`, `GOOGLE_GEMINI_RETRY_INITIAL_DELAY`,
       `GOOGLE_GEMINI_RETRY_MAX_DELAY`, and `GOOGLE_GEMINI_RETRY_JITTER`:
       Optional retry tuning for transient `429`/`5xx` provider failures.

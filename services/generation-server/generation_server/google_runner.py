@@ -6,6 +6,7 @@ import asyncio
 import base64
 import random
 import re
+import threading
 import time
 from typing import Any, Iterable, Literal, Sequence
 
@@ -29,8 +30,9 @@ class GoogleGeminiRunner:
     def __init__(
         self,
         api_key: str | None,
-        model: str,
+        model: str | None = None,
         *,
+        models: Sequence[str] | None = None,
         use_vertex_ai: bool = False,
         vertex_project: str | None = None,
         vertex_location: str | None = None,
@@ -41,8 +43,13 @@ class GoogleGeminiRunner:
         retry_jitter: float = 0.25,
         client: genai.Client | None = None,
     ) -> None:
-        if not model:
-            raise ValueError("model must be provided")
+        configured_models = tuple(
+            candidate.strip()
+            for candidate in (models or ((model,) if model else ()))
+            if candidate and candidate.strip()
+        )
+        if not configured_models:
+            raise ValueError("at least one model must be provided")
         if use_vertex_ai:
             if not vertex_project:
                 raise ValueError("vertex_project must be provided when use_vertex_ai is enabled")
@@ -51,7 +58,9 @@ class GoogleGeminiRunner:
         elif not api_key:
             raise ValueError("api_key must be provided")
 
-        self._model = model
+        self._models = configured_models
+        self._model_index = 0
+        self._model_lock = threading.Lock()
         self._timeout = timeout
         self._max_retries = max(0, int(max_retries))
         self._retry_initial_delay = max(0.0, float(retry_initial_delay))
@@ -77,6 +86,14 @@ class GoogleGeminiRunner:
         """No-op initializer to match the generation runner protocol."""
 
         return None
+
+    def _next_model(self) -> str:
+        """Select one model per provider request in round-robin order."""
+
+        with self._model_lock:
+            model = self._models[self._model_index]
+            self._model_index = (self._model_index + 1) % len(self._models)
+            return model
 
     async def generate(
         self,
@@ -149,6 +166,7 @@ class GoogleGeminiRunner:
         response = self._generate_content_with_retries(
             contents=contents,
             generation_config=generation_config,
+            model=self._next_model(),
         )
 
         image_bytes = self._extract_image_bytes(response)
@@ -174,12 +192,13 @@ class GoogleGeminiRunner:
         *,
         contents: Sequence[Any],
         generation_config: Any,
+        model: str,
     ) -> Any:
         attempt = 0
         while True:
             try:
                 return self._client.models.generate_content(
-                    model=self._model,
+                    model=model,
                     contents=contents,
                     config=generation_config,
                 )

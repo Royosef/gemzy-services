@@ -33,9 +33,30 @@ def test_google_provider_accepts_vertex_ai_with_default_location(
     assert settings.google_gemini_use_vertex_ai is True
     assert settings.google_cloud_project == "demo-project"
     assert settings.google_cloud_location == "global"
-    assert settings.google_gemini_model == "gemini-2.5-flash-image"
+    assert settings.google_gemini_models == (
+        "gemini-3-pro-image",
+        "gemini-3.1-flash-image",
+    )
     assert settings.job_look_concurrency == 1
     assert settings.google_gemini_max_retries == 4
     assert settings.google_gemini_retry_initial_delay == 1.0
     assert settings.google_gemini_retry_max_delay == 16.0
     assert settings.google_gemini_retry_jitter == 0.25
+
+
+def test_google_models_are_parsed_from_comma_separated_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("GENERATION_PROVIDER", "google_gemini")
+    monkeypatch.setenv("GOOGLE_GEMINI_API_KEY", "key")
+    monkeypatch.setenv(
+        "GOOGLE_GEMINI_MODELS",
+        "gemini-3-pro-image,  gemini-3.1-flash-image",
+    )
+
+    settings = Settings.from_env()
+
+    assert settings.google_gemini_models == (
+        "gemini-3-pro-image",
+        "gemini-3.1-flash-image",
+    )

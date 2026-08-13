@@ -144,6 +144,35 @@ def test_generate_returns_bytes():
     assert client.calls[0]["config"].kwargs["image_config"].kwargs["output_mime_type"] == "image/png"
 
 
+def test_generate_round_robins_configured_models():
+    response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
+    client = DummyClient(response)
+    runner = GoogleGeminiRunner(
+        api_key="secret",
+        models=("gemini-3-pro-image", "gemini-3.1-flash-image"),
+        client=client,
+    )
+
+    async def _generate_three() -> None:
+        for _ in range(3):
+            await runner.generate(
+                prompt="same prompt",
+                negative_prompt="",
+                product_images=[],
+                model_image=b"",
+                aspect="1:1",
+                look_index=0,
+            )
+
+    asyncio.run(_generate_three())
+
+    assert [call["model"] for call in client.calls] == [
+        "gemini-3-pro-image",
+        "gemini-3.1-flash-image",
+        "gemini-3-pro-image",
+    ]
+
+
 def test_generate_labels_jewelry_and_model_references_separately():
     response = DummyResponse([DummyPart(inline_data=DummyInlineData(b"image-bytes"))])
     client = DummyClient(response)

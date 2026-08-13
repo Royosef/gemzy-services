@@ -27,6 +27,7 @@ from .auth import get_current_user, get_optional_current_user
 from .content import (
     COLLECTIONS_CACHE_CONTROL,
     COLLECTIONS_OWNER_METADATA_KEY,
+    _generate_public_collection_variants,
     _refresh_collection_cover,
     _ensure_collections_belong,
     ensure_unsaved_collection,
@@ -39,6 +40,7 @@ from .generation_state import (
     GenerationJob,
     add_result,
     create_job,
+    delete_job,
     get_job,
     mark_completed,
     mark_failed,
@@ -81,6 +83,7 @@ GENERATION_START_FAILURE_MESSAGE = "Unable to start generation right now. Please
 GENERATION_JOB_FAILURE_MESSAGE = "Generation failed. Please try again."
 IMAGE_EDIT_START_FAILURE_MESSAGE = "Unable to start image edit right now. Please try again."
 IMAGE_EDIT_JOB_FAILURE_MESSAGE = "Image edit failed. Please try again."
+DEFAULT_GENERATION_STALE_TIMEOUT_SECONDS = 10 * 60
 MOTION_START_FAILURE_MESSAGE = "Unable to start motion generation right now. Please try again."
 SEGMIND_SEEDANCE_URL = "https://api.segmind.com/v1/seedance-2.0"
 MOTION_REQUIRED_PLAN = "Pro"
@@ -696,6 +699,48 @@ def _refund_unfinished_reserved_credits(job: GenerationJob) -> int | None:
         return remaining
 
 
+def _expire_stale_generation(job: GenerationJob) -> int | None:
+    """Fail an active job after it stops receiving worker events."""
+
+    if job.status not in {"queued", "in_progress"}:
+        return None
+    try:
+        timeout_seconds = max(
+            60.0,
+            float(
+                os.getenv(
+                    "GENERATION_STALE_TIMEOUT_SECONDS",
+                    str(DEFAULT_GENERATION_STALE_TIMEOUT_SECONDS),
+                )
+            ),
+        )
+    except ValueError:
+        timeout_seconds = float(DEFAULT_GENERATION_STALE_TIMEOUT_SECONDS)
+    if (datetime.utcnow() - job.updated_at).total_seconds() < timeout_seconds:
+        return None
+
+    with job.lifecycle_lock:
+        if job.status not in {"queued", "in_progress"}:
+            return None
+        logger.warning(
+            "Expiring stale generation job %s after %.0fs without an update",
+            job.id,
+            timeout_seconds,
+        )
+        mark_failed(job, "Generation timed out. Please try again.")
+        remaining_credits = _refund_unfinished_reserved_credits(job)
+
+    if not _is_guest_user_id(job.user_id):
+        try:
+            if job.job_type == "image_edit":
+                _publish_image_edit_failed_notification(job)
+            else:
+                _publish_generation_failed_notification(job)
+        except Exception:
+            logger.exception("Failed to publish stale-job notification for %s", job.id)
+    return remaining_credits
+
+
 def _refund_cancelled_reserved_looks(job: GenerationJob, looks: int = 1) -> int | None:
     if _is_guest_user_id(job.user_id):
         return None
@@ -1053,6 +1098,12 @@ def _persist_generation_result(
 
         storage_path = _normalize_storage_path(storage_name) or storage_name
 
+        # FTUE stores preview URIs locally so signed originals are not durable
+        # enough: they turn into blank cards after their signature expires.
+        # Build the public variants before shaping the callback result so the
+        # client receives a stable preview URL from the start.
+        _generate_public_collection_variants(storage_path, "image/png")
+
         # Generate short-lived signed preview/full URLs for immediate viewing
         preview_url, view_url = _resolve_collection_image_variants(
             None,
@@ -1326,7 +1377,10 @@ async def _persist_motion_result(
 async def _forward_generation_request(
     url: str, payload: dict[str, Any]
 ) -> CreateGenerationResponse:
-    timeout = float(os.getenv("GENERATION_SERVER_TIMEOUT", "30"))
+    # Requests contain one or more base64 images and may traverse a tunnel in
+    # local/staging environments. Keep this aligned with the Moments caller so
+    # a slow upload does not fail before the worker can enqueue the job.
+    timeout = float(os.getenv("GENERATION_SERVER_TIMEOUT", "120"))
     headers: dict[str, str] = {}
     shared_secret = os.getenv("GENERATION_SHARED_SECRET", "").strip()
     if shared_secret:
@@ -1336,6 +1390,14 @@ async def _forward_generation_request(
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload, headers=headers)
     except httpx.RequestError as exc:  # pragma: no cover - network errors handled at runtime
+        logger.warning(
+            "Failed dispatching generation request: url=%s timeout=%ss "
+            "error_type=%s error=%s",
+            url,
+            timeout,
+            type(exc).__name__,
+            str(exc)[:500],
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to reach generation server",
@@ -1430,6 +1492,10 @@ def _is_guest_generation_request(payload: CreateGenerationPayload) -> bool:
     return (payload.style or {}).get("onboarding_guest") == "true"
 
 
+def _is_guest_generation_retry(payload: CreateGenerationPayload) -> bool:
+    return (payload.style or {}).get("onboarding_guest_retry") == "true"
+
+
 def _guest_request_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -1484,7 +1550,13 @@ def _validate_guest_generation_payload(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Prompt overrides require sign up.",
         )
-    if payload.looks != GUEST_GENERATION_LOOKS:
+    is_retry = _is_guest_generation_retry(payload)
+    has_valid_look_count = (
+        1 <= payload.looks <= GUEST_GENERATION_LOOKS
+        if is_retry
+        else payload.looks == GUEST_GENERATION_LOOKS
+    )
+    if not has_valid_look_count:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Sign up to customize image count.",
@@ -2307,15 +2379,19 @@ async def create_generation(
     # print("Model: ", json.dumps(model_debug, indent=2))
 
     job_id = uuid4().hex
-    is_guest_generation = user is None and _is_guest_generation_request(payload)
-    if user is None:
-        if not is_guest_generation:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Sign up to start this generation.",
-            )
+    # Guest intent is explicit in the constrained FTUE payload. Treat it as a
+    # guest job even if a stale/transitioning client session sends a bearer
+    # token, so storage ownership and the post-signup migration contract do not
+    # depend on an auth hydration race.
+    is_guest_generation = _is_guest_generation_request(payload)
+    if is_guest_generation:
         _validate_guest_generation_payload(request, payload)
         user = _build_guest_user(job_id)
+    elif user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign up to start this generation.",
+        )
 
     # Tier Enforcement
     tier_levels = {"Free": 0, "Starter": 1, "Pro": 2, "Designer": 3}
@@ -2467,12 +2543,33 @@ async def retrieve_generation(
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
-    if _is_guest_user_id(job.user_id):
-        return CreateGenerationResponse(**to_response(job))
-    if user is None or job.user_id != user.id:
+    is_guest_job = _is_guest_user_id(job.user_id)
+    if not is_guest_job and (user is None or job.user_id != user.id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
 
-    return CreateGenerationResponse(**to_response(job))
+    remaining_credits = _expire_stale_generation(job)
+    job_state = to_response(job)
+    if remaining_credits is not None:
+        job_state["remainingCredits"] = remaining_credits
+    return CreateGenerationResponse(**job_state)
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_failed_generation(
+    job_id: str,
+    user: UserState = Depends(get_current_user),
+) -> None:
+    """Remove a failed generation job from server-side history."""
+
+    job = get_job(job_id)
+    if job is None or job.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found")
+    if job.status != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only failed generations can be deleted",
+        )
+    delete_job(job_id)
 
 
 @router.post("/{job_id}/cancel", response_model=CreateGenerationResponse)
