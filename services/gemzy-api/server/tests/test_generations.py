@@ -168,6 +168,7 @@ class _CreditTable:
                 data=[
                     {
                         "credits": self._client.credits[user_id],
+                        "trial_credits": self._client.trial_credits.get(user_id, 0),
                         "purchased_credits": self._client.purchased_credits.get(user_id, 0),
                         "edit_mode_trial_edits_remaining": self._client.edit_trials.get(user_id, 0),
                     }
@@ -177,9 +178,11 @@ class _CreditTable:
 
         if self._operation and self._operation[0] == "update":
             expected = next((value for column, value in self._filters if column == "credits"), None)
+            expected_trial = next((value for column, value in self._filters if column == "trial_credits"), None)
             expected_purchased = next((value for column, value in self._filters if column == "purchased_credits"), None)
             expected_trials = next((value for column, value in self._filters if column == "edit_mode_trial_edits_remaining"), None)
             current = self._client.credits.get(user_id)
+            current_trial = self._client.trial_credits.get(user_id, 0)
             current_purchased = self._client.purchased_credits.get(user_id, 0)
             current_trials = self._client.edit_trials.get(user_id, 0)
             if self._client.fail_first_update:
@@ -190,12 +193,15 @@ class _CreditTable:
             if (
                 current is None
                 or (expected is not None and current != expected)
+                or (expected_trial is not None and current_trial != expected_trial)
                 or (expected_purchased is not None and current_purchased != expected_purchased)
                 or (expected_trials is not None and current_trials != expected_trials)
             ):
                 return SimpleNamespace(data=[], count=0)
             if "credits" in self._operation[1]:
                 self._client.credits[user_id] = self._operation[1]["credits"]
+            if "trial_credits" in self._operation[1]:
+                self._client.trial_credits[user_id] = self._operation[1]["trial_credits"]
             self._client.purchased_credits[user_id] = self._operation[1].get("purchased_credits", current_purchased)
             if "edit_mode_trial_edits_remaining" in self._operation[1]:
                 self._client.edit_trials[user_id] = self._operation[1]["edit_mode_trial_edits_remaining"]
@@ -203,6 +209,7 @@ class _CreditTable:
                 data=[
                     {
                         "credits": self._client.credits[user_id],
+                        "trial_credits": self._client.trial_credits.get(user_id, 0),
                         "purchased_credits": self._client.purchased_credits[user_id],
                         "edit_mode_trial_edits_remaining": self._client.edit_trials[user_id],
                     }
@@ -218,12 +225,14 @@ class _CreditClient:
         self,
         *,
         credits: dict[str, int],
+        trial_credits: dict[str, int] | None = None,
         purchased_credits: dict[str, int] | None = None,
         edit_trials: dict[str, int] | None = None,
         fail_first_update: bool = False,
         concurrent_credit_value: int = 0,
     ) -> None:
         self.credits = dict(credits)
+        self.trial_credits = dict(trial_credits or {})
         self.purchased_credits = dict(purchased_credits or {})
         self.edit_trials = dict(edit_trials or {user_id: 0 for user_id in credits})
         self.feedback_rows: list[dict[str, Any]] = []
@@ -463,6 +472,22 @@ def test_adjust_profile_credits_spends_purchased_credits_after_monthly(monkeypat
     assert remaining == 6
     assert credit_client.credits["user-123"] == 0
     assert credit_client.purchased_credits["user-123"] == 6
+
+
+def test_adjust_profile_credits_spends_trial_credits_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    credit_client = _CreditClient(
+        credits={"user-123": 0},
+        trial_credits={"user-123": 6},
+        purchased_credits={"user-123": 8},
+    )
+    monkeypatch.setattr(generations, "get_client", lambda: credit_client)
+
+    remaining = generations._adjust_profile_credits("user-123", -10)
+
+    assert remaining == 4
+    assert credit_client.trial_credits["user-123"] == 0
+    assert credit_client.credits["user-123"] == 0
+    assert credit_client.purchased_credits["user-123"] == 4
 
 
 def test_image_edit_uses_free_trial_before_charging_credits(

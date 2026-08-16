@@ -34,6 +34,14 @@ SUBSCRIPTION_ACCOUNT_MISMATCH_CODE = "subscription_account_mismatch"
 SUBSCRIPTION_ACCOUNT_MISMATCH_MESSAGE = (
     "This subscription belongs to another account on this device."
 )
+PRO_TRIAL_CREDITS = 100
+
+
+def _normalize_period_type(value: object | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    return normalized or None
 
 
 class CreditPackSyncRequest(BaseModel):
@@ -225,7 +233,7 @@ def _fetch_current_profile(sb, user_id: str) -> dict | None:
     try:
         resp = (
             sb.table("profiles")
-            .select("plan,credits,purchased_credits,rc_last_event_ms,subscription_expires_at,next_credit_reset_at")
+            .select("plan,credits,trial_credits,purchased_credits,subscription_period_type,rc_last_event_ms,subscription_expires_at,next_credit_reset_at")
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -319,6 +327,25 @@ def _rc_subscriber_to_plan_and_expiry(subscriber: dict) -> tuple[str, str | None
     return normalize_plan(plan), expires_at
 
 
+def _rc_subscriber_period_type(subscriber: dict, plan: str) -> str | None:
+    """Return the active subscription period type for the selected plan."""
+    subscriptions = subscriber.get("subscriptions") or {}
+    now = datetime.now(timezone.utc)
+    candidates: list[tuple[datetime, str]] = []
+    for product_id, subscription in subscriptions.items():
+        if not isinstance(subscription, dict):
+            continue
+        if normalize_plan(_product_to_tier(str(product_id))) != normalize_plan(plan):
+            continue
+        expires = _parse_rc_datetime(subscription.get("expires_date"))
+        if expires is not None and expires <= now:
+            continue
+        period_type = _normalize_period_type(subscription.get("period_type"))
+        if period_type:
+            candidates.append((expires or datetime.max.replace(tzinfo=timezone.utc), period_type))
+    return max(candidates, default=(now, None), key=lambda item: item[0])[1]
+
+
 async def _fetch_rc_subscriber(app_user_id: str) -> dict:
     if not RC_API_KEY:
         raise HTTPException(
@@ -395,23 +422,41 @@ def reconcile_subscription_profile_from_revenuecat(
         return current_profile
 
     new_tier, expires_at = _rc_subscriber_to_plan_and_expiry(subscriber)
+    period_type = _rc_subscriber_period_type(subscriber, new_tier)
     logger.info("[Auth Sync] User %s reconciled to %s from RevenueCat", user_id, new_tier)
 
     sb = get_client()
     base_profile = current_profile or _fetch_current_profile(sb, user_id) or {}
     current_plan = base_profile.get("plan", "Free")
     current_credits = base_profile.get("credits", 0)
+    current_period_type = base_profile.get("subscription_period_type")
 
-    update_data: dict[str, object] = {"plan": new_tier}
+    update_data: dict[str, object] = {
+        "plan": new_tier,
+        "subscription_period_type": period_type,
+    }
     if expires_at is not None:
         update_data["subscription_expires_at"] = expires_at
     elif new_tier == "Free":
         update_data["subscription_expires_at"] = None
 
-    if is_upgrade(current_plan, new_tier) or (current_plan != new_tier and new_tier == "Free"):
+    if period_type == "TRIAL" and new_tier == "Pro" and current_period_type != "TRIAL":
+        update_data["credits"] = 0
+        update_data["trial_credits"] = PRO_TRIAL_CREDITS
+        update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+    elif current_period_type == "TRIAL" and period_type != "TRIAL":
+        update_data["credits"] = get_plan_initial_credits(new_tier)
+        update_data["trial_credits"] = 0
+        update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+    elif current_plan != new_tier and new_tier == "Free":
+        update_data["credits"] = get_plan_initial_credits("Free")
+        update_data["trial_credits"] = 0
+        update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+    elif is_upgrade(current_plan, new_tier):
         new_allocation = get_plan_initial_credits(new_tier)
         if current_credits < new_allocation:
             update_data["credits"] = new_allocation
+            update_data["trial_credits"] = 0
             update_data["next_credit_reset_at"] = schedule_next_credit_reset()
 
     sb.table("profiles").update(update_data).eq("id", user_id).execute()
@@ -472,9 +517,11 @@ async def rc_webhook(request: Request) -> dict:
     current_plan = current_profile.get("plan", "Free")
     current_credits = current_profile.get("credits", 0)
     current_purchased_credits = current_profile.get("purchased_credits", 0)
+    current_period_type = current_profile.get("subscription_period_type")
     last_event_ms = current_profile.get("rc_last_event_ms")
     current_expires_at = current_profile.get("subscription_expires_at")
     incoming_expires_iso = _ms_to_iso(expiration_ms)
+    period_type = _normalize_period_type(event.get("period_type"))
     should_reset_credit_schedule = False
     credit_pack_sync_marker_to_remember: str | None = None
     credit_pack_sync_metadata: dict | None = None
@@ -509,7 +556,13 @@ async def rc_webhook(request: Request) -> dict:
         allocation = get_plan_initial_credits(new_tier)
         
         update_data["plan"] = new_tier
-        update_data["credits"] = allocation  # Overwrite credits for new purchase
+        update_data["subscription_period_type"] = period_type
+        if period_type == "TRIAL" and new_tier == "Pro" and current_period_type != "TRIAL":
+            update_data["credits"] = 0
+            update_data["trial_credits"] = PRO_TRIAL_CREDITS
+        elif period_type != "TRIAL":
+            update_data["credits"] = allocation
+            update_data["trial_credits"] = 0
         should_reset_credit_schedule = True
         
         # Retention offer detection
@@ -530,6 +583,8 @@ async def rc_webhook(request: Request) -> dict:
         
         update_data["plan"] = new_tier
         update_data["credits"] = allocation  # Reset credits on renewal
+        update_data["trial_credits"] = 0
+        update_data["subscription_period_type"] = period_type or "NORMAL"
         should_reset_credit_schedule = True
         
         print(f"[RC Webhook] RENEWAL: {app_user_id} -> {new_tier}, credits reset to {allocation}")
@@ -542,6 +597,9 @@ async def rc_webhook(request: Request) -> dict:
         new_tier = normalize_plan(_product_to_tier(product_id))
         
         update_data["plan"] = new_tier  # Update plan immediately
+        update_data["subscription_period_type"] = period_type
+        if period_type != "TRIAL":
+            update_data["trial_credits"] = 0
         # Do NOT overwrite credits (Rule B)
         
         # Rule C: Upgrade top-up (Pro â†’ Designer mid-cycle)
@@ -595,6 +653,8 @@ async def rc_webhook(request: Request) -> dict:
             free_allocation = get_plan_initial_credits("Free")
             update_data["plan"] = "Free"
             update_data["credits"] = free_allocation
+            update_data["trial_credits"] = 0
+            update_data["subscription_period_type"] = None
             should_reset_credit_schedule = True
             print(f"[RC Webhook] CANCELLATION: {app_user_id} - expired immediately, downgrading to Free")
             logger.info(f"[RC Webhook] CANCELLATION: {app_user_id} - expired immediately, downgraded to Free")
@@ -618,6 +678,8 @@ async def rc_webhook(request: Request) -> dict:
         free_allocation = get_plan_initial_credits("Free")
         update_data["plan"] = "Free"
         update_data["credits"] = free_allocation
+        update_data["trial_credits"] = 0
+        update_data["subscription_period_type"] = None
         should_reset_credit_schedule = True
         
         print(f"[RC Webhook] {event_type}: {app_user_id} - downgrading to Free")
@@ -684,7 +746,15 @@ async def sync_credit_pack_purchase(
             "status": "ok",
             "action": "already_synced",
             "creditsAdded": 0,
-            "currentCredits": ((current_profile.get("credits", 0) + current_profile.get("purchased_credits", 0)) if current_profile else current.credits),
+            "currentCredits": (
+                (
+                    current_profile.get("trial_credits", 0)
+                    + current_profile.get("credits", 0)
+                    + current_profile.get("purchased_credits", 0)
+                )
+                if current_profile
+                else current.credits
+            ),
         }
 
     current_profile = _fetch_current_profile(get_client(), current.id)
@@ -693,7 +763,11 @@ async def sync_credit_pack_purchase(
 
     current_credits = current_profile.get("credits", 0)
     current_purchased_credits = current_profile.get("purchased_credits", 0)
-    current_total_credits = current_credits + current_purchased_credits
+    current_total_credits = (
+        current_profile.get("trial_credits", 0)
+        + current_credits
+        + current_purchased_credits
+    )
     logger.info(
         "[Credit Sync] awaiting webhook purchased_credits grant user=%s product=%s marker=%s current_credits=%s",
         current.id,
@@ -736,6 +810,7 @@ async def sync_subscription(
     subscriber = await _fetch_rc_subscriber(current.id)
     _ensure_subscription_sync_ownership(current.id, subscriber=subscriber)
     new_tier, expires_at = _rc_subscriber_to_plan_and_expiry(subscriber)
+    period_type = _rc_subscriber_period_type(subscriber, new_tier)
 
     logger.info("[Sync] User %s reconciled to %s from RevenueCat", current.id, new_tier)
 
@@ -746,17 +821,34 @@ async def sync_subscription(
     current_profile = _fetch_current_profile(sb, current.id)
     current_plan = current_profile.get("plan", "Free") if current_profile else "Free"
     current_credits = current_profile.get("credits", 0) if current_profile else 0
+    current_period_type = current_profile.get("subscription_period_type") if current_profile else None
 
-    update_data: dict = {"plan": new_tier}
+    update_data: dict = {
+        "plan": new_tier,
+        "subscription_period_type": period_type,
+    }
     if expires_at is not None:
         update_data["subscription_expires_at"] = expires_at
     elif new_tier == "Free":
         update_data["subscription_expires_at"] = None
 
-    if is_upgrade(current_plan, new_tier) or (current_plan != new_tier and new_tier == "Free"):
+    if period_type == "TRIAL" and new_tier == "Pro" and current_period_type != "TRIAL":
+        update_data["credits"] = 0
+        update_data["trial_credits"] = PRO_TRIAL_CREDITS
+        update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+    elif current_period_type == "TRIAL" and period_type != "TRIAL":
+        update_data["credits"] = get_plan_initial_credits(new_tier)
+        update_data["trial_credits"] = 0
+        update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+    elif current_plan != new_tier and new_tier == "Free":
+        update_data["credits"] = get_plan_initial_credits("Free")
+        update_data["trial_credits"] = 0
+        update_data["next_credit_reset_at"] = schedule_next_credit_reset()
+    elif is_upgrade(current_plan, new_tier):
         new_allocation = get_plan_initial_credits(new_tier)
         if current_credits < new_allocation:
             update_data["credits"] = new_allocation
+            update_data["trial_credits"] = 0
             update_data["next_credit_reset_at"] = schedule_next_credit_reset()
 
     sb.table("profiles").update(update_data).eq("id", current.id).execute()

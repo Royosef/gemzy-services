@@ -111,6 +111,8 @@ class UserState(BaseModel):
     plan: str | None = None
     credits: int = 0
     monthlyCredits: int = 0
+    trialCredits: int = 0
+    trialExpiresAt: str | None = None
     purchasedCredits: int = 0
     createdAt: str | None = None
     avatarUrl: str | None = None

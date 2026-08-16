@@ -385,10 +385,14 @@ def _ensure_monthly_credits(
         sb.table("profiles").update({
             "plan": "Free",
             "credits": allocation,
+            "trial_credits": 0,
+            "subscription_period_type": None,
             "next_credit_reset_at": new_next_reset,
         }).eq("id", user_id).execute()
         profile["plan"] = "Free"
         profile["credits"] = allocation
+        profile["trial_credits"] = 0
+        profile["subscription_period_type"] = None
         profile["next_credit_reset_at"] = new_next_reset
         return profile
 
@@ -423,7 +427,7 @@ def _user_profile(user_id: str, *, client=None) -> dict:
         resp = (
             sb.table("profiles")
             .select(
-                "id,name,plan,credits,purchased_credits,edit_mode_trial_edits_remaining,avatar_url,notification_preferences,is_admin,deactivated_at,retention_offer_used,retention_offer_used_at,rc_last_event_ms,subscription_expires_at,onboarding_completed,next_credit_reset_at,on_model_style_trials,pure_jewelry_style_trials"
+                "id,name,plan,credits,trial_credits,purchased_credits,subscription_period_type,edit_mode_trial_edits_remaining,avatar_url,notification_preferences,is_admin,deactivated_at,retention_offer_used,retention_offer_used_at,rc_last_event_ms,subscription_expires_at,onboarding_completed,next_credit_reset_at,on_model_style_trials,pure_jewelry_style_trials"
             )
             .eq("id", user_id)
             .limit(1)
@@ -484,7 +488,9 @@ def _build_user_state(
     name = _clean_text(profile.get("name"))
     plan = profile.get("plan")
     monthly_credits = _normalize_credits(profile.get("credits"))
+    trial_credits = _normalize_credits(profile.get("trial_credits"))
     purchased_credits = _normalize_credits(profile.get("purchased_credits"))
+    is_trial = profile.get("subscription_period_type") == "TRIAL"
     avatar = _extract_avatar(profile)
     notifications = _normalize_notifications(profile.get("notification_preferences"))
     is_admin = bool(profile.get("is_admin"))
@@ -501,8 +507,10 @@ def _build_user_state(
         email=_auth_user_email(auth_user, metadata),
         name=name,
         plan=normalize_plan(plan),
-        credits=monthly_credits + purchased_credits,
+        credits=trial_credits + monthly_credits + purchased_credits,
         monthlyCredits=monthly_credits,
+        trialCredits=trial_credits,
+        trialExpiresAt=profile.get("subscription_expires_at") if is_trial else None,
         purchasedCredits=purchased_credits,
         createdAt=created_at,
         avatarUrl=avatar,

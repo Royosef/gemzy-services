@@ -12,6 +12,11 @@ from server.schemas import UserState
 class _Request:
     def __init__(self, payload: dict):
         self.payload = payload
+        self.headers = (
+            {"Authorization": payments.RC_WEBHOOK_AUTH}
+            if payments.RC_WEBHOOK_AUTH
+            else {}
+        )
 
     async def json(self) -> dict:
         return self.payload
@@ -227,9 +232,62 @@ def test_expiration_event_downgrades_even_when_stored_expiry_is_later(monkeypatc
                     "subscription_expires_at": "2026-04-14T17:51:00+00:00",
                     "plan": "Free",
                     "credits": 10,
+                    "trial_credits": 0,
+                    "subscription_period_type": None,
                     "next_credit_reset_at": "2026-06-01T00:00:00+00:00",
                 },
             ),
             "filters": [("id", "user-1")],
         }
     ]
+
+
+def test_initial_pro_trial_grants_dedicated_credits(monkeypatch: pytest.MonkeyPatch):
+    expiration_ms = int(datetime(2099, 1, 4, tzinfo=timezone.utc).timestamp() * 1000)
+    fake_client = _FakeClient(
+        {
+            "profiles": [
+                {
+                    "plan": "Free",
+                    "credits": 40,
+                    "trial_credits": 0,
+                    "purchased_credits": 25,
+                    "subscription_period_type": None,
+                    "rc_last_event_ms": None,
+                    "subscription_expires_at": None,
+                    "next_credit_reset_at": None,
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(payments, "get_client", lambda: fake_client)
+    monkeypatch.setattr(payments, "get_plan_initial_credits", lambda _plan: 500)
+    monkeypatch.setattr(
+        payments,
+        "schedule_next_credit_reset",
+        lambda now=None: "2099-02-01T00:00:00+00:00",
+    )
+
+    result = asyncio.run(
+        payments.rc_webhook(
+            _Request(
+                {
+                    "event": {
+                        "type": "INITIAL_PURCHASE",
+                        "app_user_id": "user-1",
+                        "product_id": "gemzy_pro_monthly",
+                        "period_type": "TRIAL",
+                        "expiration_at_ms": expiration_ms,
+                        "event_timestamp_ms": 123,
+                    }
+                }
+            )
+        )
+    )
+
+    assert result == {"status": "ok"}
+    update = fake_client.calls[-1]["operation"][1]
+    assert update["plan"] == "Pro"
+    assert update["credits"] == 0
+    assert update["trial_credits"] == 100
+    assert update["subscription_period_type"] == "TRIAL"

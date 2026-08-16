@@ -25,7 +25,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   name TEXT,
   plan plan_tier NOT NULL DEFAULT 'Free',
   credits INTEGER NOT NULL DEFAULT 0 CHECK (credits >= 0),
+  trial_credits INTEGER NOT NULL DEFAULT 0 CHECK (trial_credits >= 0),
   purchased_credits INTEGER NOT NULL DEFAULT 0 CHECK (purchased_credits >= 0),
+  subscription_period_type TEXT,
+  subscription_expires_at TIMESTAMPTZ,
   edit_mode_trial_edits_remaining INTEGER NOT NULL DEFAULT 2 CHECK (
     edit_mode_trial_edits_remaining >= 0
     AND edit_mode_trial_edits_remaining <= 2
@@ -472,7 +475,18 @@ BEGIN
   refund_delta := GREATEST(0, p_target_refunded_credits - current_refunded);
   IF refund_delta > 0 THEN
     UPDATE public.profiles
-    SET credits = credits + refund_delta
+    SET trial_credits = CASE
+          WHEN subscription_period_type = 'TRIAL'
+            AND subscription_expires_at > NOW()
+          THEN LEAST(100, trial_credits + refund_delta)
+          ELSE trial_credits
+        END,
+        credits = credits + CASE
+          WHEN subscription_period_type = 'TRIAL'
+            AND subscription_expires_at > NOW()
+          THEN GREATEST(0, refund_delta - (100 - trial_credits))
+          ELSE refund_delta
+        END
     WHERE id = p_user_id;
 
     IF NOT FOUND THEN
@@ -488,7 +502,7 @@ BEGIN
 
   RETURN QUERY
   SELECT
-    profiles.credits + profiles.purchased_credits,
+    profiles.trial_credits + profiles.credits + profiles.purchased_credits,
     current_refunded
   FROM public.profiles
   WHERE profiles.id = p_user_id;

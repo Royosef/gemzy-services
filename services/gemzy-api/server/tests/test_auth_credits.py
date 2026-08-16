@@ -116,6 +116,8 @@ def test_ensure_monthly_credits_downgrades_expired_paid_plan(
     assert update_call["operation"][1] == {
         "plan": "Free",
         "credits": 5,
+        "trial_credits": 0,
+        "subscription_period_type": None,
         "next_credit_reset_at": "2026-06-01T00:00:00Z",
     }
 
@@ -127,6 +129,10 @@ def test_build_user_state_uses_profile_as_source_of_truth():
             "name": "Profile Name",
             "plan": "Designer",
             "credits": 12,
+            "trial_credits": 8,
+            "purchased_credits": 3,
+            "subscription_period_type": "TRIAL",
+            "subscription_expires_at": "2099-01-04T00:00:00Z",
             "avatar_url": "https://example.com/profile.png",
             "notification_preferences": {
                 "gemzyUpdates": False,
@@ -152,7 +158,11 @@ def test_build_user_state_uses_profile_as_source_of_truth():
 
     assert state.name == "Profile Name"
     assert state.plan == "Designer"
-    assert state.credits == 12
+    assert state.credits == 23
+    assert state.monthlyCredits == 12
+    assert state.trialCredits == 8
+    assert state.purchasedCredits == 3
+    assert state.trialExpiresAt == "2099-01-04T00:00:00Z"
     assert state.avatarUrl == "https://example.com/profile.png"
     assert state.notificationPreferences is not None
     assert state.notificationPreferences.gemzyUpdates is False
