@@ -826,15 +826,16 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
         versions_by_id = {str(row["id"]): row for row in version_rows if row.get("id")}
 
     use_fallback_catalog = not task_rows and not engine_rows
-    surfaces: dict[str, dict[str, dict[str, Any]]] = (
-        {
-            key: {
-                str(engine.get("engineId")): deepcopy(engine)
-                for engine in (catalog.get(key) or {}).get("engines") or []
-                if engine.get("engineId")
-            }
-            for key in _SURFACE_KEYS
+    base_surfaces: dict[str, dict[str, dict[str, Any]]] = {
+        key: {
+            str(engine.get("engineId")): deepcopy(engine)
+            for engine in (catalog.get(key) or {}).get("engines") or []
+            if engine.get("engineId")
         }
+        for key in _SURFACE_KEYS
+    }
+    surfaces: dict[str, dict[str, dict[str, Any]]] = (
+        deepcopy(base_surfaces)
         if use_fallback_catalog
         else {key: {} for key in _SURFACE_KEYS}
     )
@@ -902,7 +903,11 @@ def resolve_generation_ui_catalog(*, client: Any | None = None) -> dict[str, Any
             ),
             {},
         )
-        base_engine = (surfaces.get(surface_key, {}) or {}).get(engine_id) or existing_task_engine or {}
+        base_engine = (
+            (base_surfaces.get(surface_key, {}) or {}).get(engine_id)
+            or existing_task_engine
+            or {}
+        )
         merged_engine = deepcopy(base_engine)
         merged_engine["taskKey"] = task_key or None
         merged_engine["engineId"] = engine_id

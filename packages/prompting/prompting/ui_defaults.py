@@ -193,14 +193,20 @@ _ON_MODEL_V1_FREE_OPTION_LABELS = {
 }
 
 _ON_MODEL_V2_FREE_OPTION_LABELS = {
-    "background": ["White Studio"],
+    "background": [
+        "White Studio",
+        "Warm Interior",
+        "Evening Glow",
+        "Forest Shade",
+        "Dark Studio",
+    ],
     "emotion": ["Soft Warmth"],
     "hair": ["Natural"],
     "outfit": ["Casual Cool"],
     "pose": ["Candid", "At Rest"],
-    "lighting": ["Soft Wrap"],
+    "lighting": ["Soft Wrap", "Scene Light"],
     "camera": ["Beauty Close-Up", "Portrait"],
-    "image_style": ["Natural"],
+    "image_style": ["Natural", "Golden Hour", "High Contrast"],
 }
 
 
@@ -272,7 +278,7 @@ _PURE_JEWELRY_V2_STYLE_META = {
                 "description": "What the jewelry rests on",
                 "iconKey": "stack",
                 "editTier": "Pro",
-                "freeOptionLabels": ["Studio Seamless"],
+                "freeOptionLabels": ["Studio Seamless", "Velvet"],
             },
             "lighting": {
                 "label": "Lighting",
@@ -306,14 +312,14 @@ _PURE_JEWELRY_V2_STYLE_META = {
                 "description": "The world the object comes from",
                 "iconKey": "mountains",
                 "editTier": "Pro",
-                "freeOptionLabels": ["Living & Fresh"],
+                "freeOptionLabels": ["Living & Fresh", "Open", "Luxury Objects"],
             },
             "relationship": {
                 "label": "Relationship",
                 "description": "How jewelry and object interact",
                 "iconKey": "target",
                 "editTier": "Pro",
-                "freeOptionLabels": ["Resting On"],
+                "freeOptionLabels": ["Resting On", "Inside"],
             },
             "lighting": {
                 "label": "Lighting",
@@ -402,7 +408,7 @@ _PURE_JEWELRY_V2_STYLE_META = {
                 "description": "How pieces are organized",
                 "iconKey": "squares-four",
                 "editTier": "Pro",
-                "freeOptionLabels": ["Clean Grid"],
+                "freeOptionLabels": ["Clean Grid", "Organic Scatter"],
             },
             "surface": {
                 "label": "Surface",
@@ -429,7 +435,7 @@ _PURE_JEWELRY_V2_STYLE_META = {
                 "description": "The tonal world of the image",
                 "iconKey": "palette",
                 "editTier": "Pro",
-                "freeOptionLabels": ["Neutral & Clean"],
+                "freeOptionLabels": ["Neutral & Clean", "Rich & Dark"],
             },
             "composition": {
                 "label": "Composition",

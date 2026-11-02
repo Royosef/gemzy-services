@@ -128,11 +128,93 @@ def test_generation_ui_config_returns_db_overrides_and_fallbacks(
     assert body["onModel"]["engines"][0]["selector"]["title"] == "Gemzy Experimental"
     assert body["onModel"]["engines"][0]["publicVersionKey"] == "v9"
     assert body["onModel"]["engines"][0]["engineSlug"] == "on-model-v4-5"
+    background = next(
+        section
+        for section in body["onModel"]["engines"][0]["sections"]
+        if section["id"] == "background"
+    )
+    assert {"Warm Interior", "Evening Glow", "Forest Shade", "Dark Studio"} <= set(
+        background["freeOptionLabels"]
+    )
     assert body["tasks"][0]["key"] == "on-model"
     assert body["tasks"][0]["displayDefaults"]["layout"] == "flat-sections"
     assert body["tasks"][0]["engines"][0]["taskKey"] == "on-model"
     assert body["pureJewelry"]["engines"] == []
     assert body["fetchedAt"]
+
+
+def test_generation_ui_config_preserves_legacy_preset_free_controls_for_known_pure_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.include_router(generations.router)
+    client = TestClient(app)
+    stub = _StubClient()
+    stub.tables["prompt_tasks"] = [
+        {
+            "id": "task-pure",
+            "key": "pure-jewelry",
+            "name": "Pure Jewelry",
+            "surface": "pureJewelry",
+            "display_defaults": {},
+        }
+    ]
+    stub.tables["prompt_engines"] = [
+        {
+            "id": "engine-pure",
+            "slug": "pure-jewelry-v5-2",
+            "name": "Pure Jewelry V5.2",
+            "task_id": "task-pure",
+            "public_engine_key": "pure-jewelry-v5-2",
+            "is_user_selectable": True,
+            "published_version_id": "version-pure",
+        }
+    ]
+    stub.tables["prompt_engine_versions"] = [
+        {
+            "id": "version-pure",
+            "public_version_key": "pure-jewelry-v5-2",
+            "definition": {
+                "styles": {
+                    "object-world": {
+                        "categories": [
+                            (
+                                "object-territory",
+                                "OBJECT TERRITORY",
+                                {
+                                    "Open": "open prompt",
+                                    "Luxury Objects": "luxury prompt",
+                                },
+                            ),
+                            (
+                                "relationship",
+                                "RELATIONSHIP",
+                                {
+                                    "Resting On": "resting prompt",
+                                    "Inside": "inside prompt",
+                                },
+                            ),
+                        ]
+                    }
+                }
+            },
+        }
+    ]
+    monkeypatch.setattr(generations, "get_client", lambda: stub)
+    monkeypatch.setattr(generations, "ensure_default_prompt_registry", lambda client=None: False)
+
+    response = client.get("/generations/ui-config")
+
+    assert response.status_code == 200
+    engine = response.json()["pureJewelry"]["engines"][0]
+    style = next(item for item in engine["styles"] if item["id"] == "object-world")
+    parameters = {parameter["id"]: parameter for parameter in style["parameters"]}
+    assert {"Open", "Luxury Objects"} <= set(
+        parameters["object-territory"]["freeOptionLabels"]
+    )
+    assert {"Resting On", "Inside"} <= set(
+        parameters["relationship"]["freeOptionLabels"]
+    )
 
 
 def test_generation_ui_config_prefers_published_version_when_active_differs(
