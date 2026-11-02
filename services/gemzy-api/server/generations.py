@@ -99,6 +99,20 @@ SERVER_MANAGED_PRESET_STYLE_KEYS = (
     "creative_variation_lanes",
     "creative_object_territory",
 )
+LEGACY_PRESET_SIGNATURES: dict[str, tuple[tuple[str, dict[str, str]], ...]] = {
+    "on-model": (
+        ("Autumn Golden Hour", {"background": "Warm Interior", "image_style": "Golden Hour"}),
+        ("Christmas Tree Glow", {"background": "Evening Glow", "lighting": "Soft Wrap"}),
+        ("Snowy Pine Glow", {"background": "Forest Shade", "lighting": "Scene Light"}),
+        ("Midnight Glam", {"background": "Dark Studio", "image_style": "High Contrast"}),
+    ),
+    "pure-jewelry": (
+        ("Gothic Velvet", {"style_type": "pure-studio", "surface": "Velvet"}),
+        ("Pumpkin Harvest", {"style_type": "object-world", "object-territory": "Pumpkin Accents"}),
+        ("Holiday Gift Box", {"style_type": "object-world", "object-territory": "Jewelry Presentation Box"}),
+        ("Confetti Flatlay", {"style_type": "arranged", "arrangement-style": "Organic Scatter", "color-palette": "Rich & Dark"}),
+    ),
+}
 FALLBACK_IMAGE_EDIT_HERO_PROMPT = (
     "Generate this exact same image. Change nothing except the specific modifications stated below. "
     "Every element of the original image - the background, the scene, the lighting, the model, the pose, "
@@ -330,6 +344,19 @@ def _generation_task_type(payload: CreateGenerationPayload) -> str:
     )
 
 
+def _legacy_creation_preset_name(task_type: str, style: dict[str, str]) -> str | None:
+    """Identify presets selected by clients that predate the presetId field."""
+
+    matches: list[str] = []
+    for name, signature in LEGACY_PRESET_SIGNATURES.get(task_type, ()):
+        if all(
+            str(style.get(key) or "").strip().casefold() == expected.casefold()
+            for key, expected in signature.items()
+        ):
+            matches.append(name)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _resolve_generation_style(payload: CreateGenerationPayload) -> dict[str, str]:
     """Apply server-owned preset prompt fields to the client-editable style."""
 
@@ -340,6 +367,37 @@ def _resolve_generation_style(payload: CreateGenerationPayload) -> dict[str, str
 
     preset_id = (payload.presetId or "").strip()
     if not preset_id:
+        legacy_name = _legacy_creation_preset_name(task_type, style)
+        if not legacy_name:
+            return style
+        try:
+            rows = (
+                get_client()
+                .table("creation_look_presets")
+                .select("id,task_key,style")
+                .eq("task_key", task_type)
+                .eq("name", legacy_name)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+        except Exception:
+            logger.warning(
+                "Unable to resolve legacy creation preset",
+                extra={"task_type": task_type, "preset_name": legacy_name},
+                exc_info=True,
+            )
+            return style
+        if not rows:
+            return style
+        preset_style = rows[0].get("style")
+        if isinstance(preset_style, dict):
+            for key in SERVER_MANAGED_PRESET_STYLE_KEYS:
+                value = preset_style.get(key)
+                if isinstance(value, str) and value.strip():
+                    style[key] = value.strip()
         return style
 
     try:

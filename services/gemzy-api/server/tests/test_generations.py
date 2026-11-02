@@ -150,6 +150,53 @@ def test_generation_style_drops_server_managed_fields_without_preset(
     assert "creative_direction" not in resolved
 
 
+def test_generation_style_resolves_legacy_client_preset_from_unique_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_payload: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(
+        generations,
+        "get_client",
+        lambda: _PresetClient(
+            [{"task_key": "on-model", "style": {
+                "creative_direction": "LEGACY SERVER DIRECTION",
+                "creative_exclusions": "LEGACY SERVER EXCLUSIONS",
+            }}]
+        ),
+    )
+    generation_payload["style"] = {
+        "task_type": "on-model",
+        "background": "Warm Interior",
+        "image_style": "Golden Hour",
+    }
+    payload = generations.CreateGenerationPayload.model_validate(generation_payload)
+
+    resolved = generations._resolve_generation_style(payload)
+
+    assert resolved["creative_direction"] == "LEGACY SERVER DIRECTION"
+    assert resolved["creative_exclusions"] == "LEGACY SERVER EXCLUSIONS"
+
+
+def test_generation_style_does_not_guess_legacy_preset_from_partial_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_payload: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(
+        generations,
+        "get_client",
+        lambda: pytest.fail("partial signatures must not query presets"),
+    )
+    generation_payload["style"] = {
+        "task_type": "on-model",
+        "image_style": "Golden Hour",
+    }
+    payload = generations.CreateGenerationPayload.model_validate(generation_payload)
+
+    resolved = generations._resolve_generation_style(payload)
+
+    assert "creative_direction" not in resolved
+
+
 def test_generation_style_rejects_preset_for_another_task(
     monkeypatch: pytest.MonkeyPatch,
     generation_payload: dict[str, Any],
