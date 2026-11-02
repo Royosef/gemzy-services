@@ -7,6 +7,7 @@ import json
 import base64
 import io
 import os
+import re
 from datetime import datetime, timedelta
 import logging
 from typing import Any
@@ -108,8 +109,8 @@ LEGACY_PRESET_SIGNATURES: dict[str, tuple[tuple[str, dict[str, str]], ...]] = {
     ),
     "pure-jewelry": (
         ("Gothic Velvet", {"style_type": "pure-studio", "surface": "Velvet"}),
-        ("Pumpkin Harvest", {"style_type": "object-world", "object-territory": "Pumpkin Accents"}),
-        ("Holiday Gift Box", {"style_type": "object-world", "object-territory": "Jewelry Presentation Box"}),
+        ("Pumpkin Harvest", {"style_type": "object-world", "object-territory": "Open", "relationship": "Resting On"}),
+        ("Holiday Gift Box", {"style_type": "object-world", "object-territory": "Luxury Objects", "relationship": "Inside"}),
         ("Confetti Flatlay", {"style_type": "arranged", "arrangement-style": "Organic Scatter", "color-palette": "Rich & Dark"}),
     ),
 }
@@ -344,13 +345,20 @@ def _generation_task_type(payload: CreateGenerationPayload) -> str:
     )
 
 
+def _normalize_legacy_preset_value(value: object) -> str:
+    """Treat UI labels and the slug IDs sent by older clients as equivalent."""
+
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
+
+
 def _legacy_creation_preset_name(task_type: str, style: dict[str, str]) -> str | None:
     """Identify presets selected by clients that predate the presetId field."""
 
     matches: list[str] = []
     for name, signature in LEGACY_PRESET_SIGNATURES.get(task_type, ()):
         if all(
-            str(style.get(key) or "").strip().casefold() == expected.casefold()
+            _normalize_legacy_preset_value(style.get(key))
+            == _normalize_legacy_preset_value(expected)
             for key, expected in signature.items()
         ):
             matches.append(name)

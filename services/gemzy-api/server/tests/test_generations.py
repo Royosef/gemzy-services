@@ -177,6 +177,55 @@ def test_generation_style_resolves_legacy_client_preset_from_unique_signature(
     assert resolved["creative_exclusions"] == "LEGACY SERVER EXCLUSIONS"
 
 
+@pytest.mark.parametrize(
+    ("preset_name", "client_style"),
+    [
+        ("Gothic Velvet", {"style_type": "pure-studio", "surface": "velvet"}),
+        (
+            "Pumpkin Harvest",
+            {
+                "style_type": "object-world",
+                "object-territory": "open",
+                "relationship": "resting-on",
+            },
+        ),
+        (
+            "Holiday Gift Box",
+            {
+                "style_type": "object-world",
+                "object-territory": "luxury-objects",
+                "relationship": "inside",
+            },
+        ),
+        (
+            "Confetti Flatlay",
+            {
+                "style_type": "arranged",
+                "arrangement-style": "organic-scatter",
+                "color-palette": "rich-dark",
+            },
+        ),
+    ],
+)
+def test_generation_style_resolves_legacy_pure_jewelry_slug_signatures(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_payload: dict[str, Any],
+    preset_name: str,
+    client_style: dict[str, str],
+) -> None:
+    client = _PresetClient(
+        [{"task_key": "pure-jewelry", "style": {"creative_direction": preset_name}}]
+    )
+    monkeypatch.setattr(generations, "get_client", lambda: client)
+    generation_payload["model"]["slug"] = "pure-jewelry"
+    generation_payload["style"] = {"task_type": "pure-jewelry", **client_style}
+    payload = generations.CreateGenerationPayload.model_validate(generation_payload)
+
+    resolved = generations._resolve_generation_style(payload)
+
+    assert resolved["creative_direction"] == preset_name
+
+
 def test_generation_style_does_not_guess_legacy_preset_from_partial_signature(
     monkeypatch: pytest.MonkeyPatch,
     generation_payload: dict[str, Any],
