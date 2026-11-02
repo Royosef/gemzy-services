@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from PIL import Image
 
@@ -93,6 +93,12 @@ MOTION_MAX_VIDEO_BYTES = 200 * 1024 * 1024
 DEFAULT_EDIT_MODE_TRIAL_EDITS = 2
 BASE_TASK_TYPE_ON_MODEL = "on-model"
 BASE_TASK_TYPE_PURE_JEWELRY = "pure-jewelry"
+SERVER_MANAGED_PRESET_STYLE_KEYS = (
+    "creative_direction",
+    "creative_exclusions",
+    "creative_variation_lanes",
+    "creative_object_territory",
+)
 FALLBACK_IMAGE_EDIT_HERO_PROMPT = (
     "Generate this exact same image. Change nothing except the specific modifications stated below. "
     "Every element of the original image - the background, the scene, the lighting, the model, the pose, "
@@ -322,6 +328,60 @@ def _generation_task_type(payload: CreateGenerationPayload) -> str:
         if payload.model.slug == "pure-jewelry"
         else BASE_TASK_TYPE_ON_MODEL
     )
+
+
+def _resolve_generation_style(payload: CreateGenerationPayload) -> dict[str, str]:
+    """Apply server-owned preset prompt fields to the client-editable style."""
+
+    task_type = _generation_task_type(payload)
+    style = _style_with_task_type(payload.style, task_type)
+    for key in SERVER_MANAGED_PRESET_STYLE_KEYS:
+        style.pop(key, None)
+
+    preset_id = (payload.presetId or "").strip()
+    if not preset_id:
+        return style
+
+    try:
+        UUID(preset_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid creation preset identifier.",
+        ) from exc
+
+    rows = (
+        get_client()
+        .table("creation_look_presets")
+        .select("id,task_key,style")
+        .eq("id", preset_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This creation preset is no longer available.",
+        )
+
+    preset = rows[0]
+    if preset.get("task_key") != task_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Creation preset does not match this generation type.",
+        )
+
+    preset_style = preset.get("style")
+    if isinstance(preset_style, dict):
+        for key in SERVER_MANAGED_PRESET_STYLE_KEYS:
+            value = preset_style.get(key)
+            if isinstance(value, str) and value.strip():
+                style[key] = value.strip()
+
+    return style
 
 
 def _image_edit_source_base_task_type(payload: CreateImageEditPayload) -> str:
@@ -846,7 +906,7 @@ def _build_generation_payload(
 ) -> dict[str, Any]:
     """Shape the payload forwarded to the downstream generation service."""
 
-    request_payload = payload.model_dump(exclude={"generationServerUrl"})
+    request_payload = payload.model_dump(exclude={"generationServerUrl", "presetId"})
     request_payload["quality"] = QUALITY_FORWARD_MAP.get(payload.quality, payload.quality)
     return {
         "job": {
@@ -2438,9 +2498,7 @@ async def create_generation(
     for upload in payload.uploads:
         _process_upload(upload)
 
-    generation_style = _style_with_task_type(
-        payload.style, _generation_task_type(payload)
-    )
+    generation_style = _resolve_generation_style(payload)
     payload = payload.model_copy(update={"style": generation_style})
     target_collection_id = (
         None

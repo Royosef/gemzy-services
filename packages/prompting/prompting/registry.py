@@ -356,6 +356,8 @@ def _finalize_image_prompts(
     negative_prompt: str,
 ) -> dict[str, Any]:
     count = max(1, int(request.get("looks") or 1))
+    style = request.get("style") if isinstance(request.get("style"), dict) else {}
+    creative_exclusions = str(style.get("creative_exclusions") or "").strip()
     overrides = [
         str(value).strip()
         for value in request.get("promptOverrides", []) or []
@@ -367,11 +369,67 @@ def _finalize_image_prompts(
         if len(prompts) < count:
             prompts.extend([prompts[-1]] * (count - len(prompts)))
     else:
-        prompts = [prompt for _ in range(count)]
+        creative_direction = str(style.get("creative_direction") or "").strip()
+        task_type = str(style.get("task_type") or "").strip().lower()
+        if creative_direction and count > 1:
+            if task_type.startswith("pure-jewelry"):
+                custom_variation_lanes = tuple(
+                    lane.strip()
+                    for lane in str(style.get("creative_variation_lanes") or "").split("||")
+                    if lane.strip()
+                )
+                variation_lanes = custom_variation_lanes or (
+                    "Favor a sculptural hero arrangement with a controlled close-to-medium view.",
+                    "Favor asymmetry, generous negative space, and a clearly different camera angle.",
+                    "Favor layered depth with a new relationship between the jewelry, surface, and supporting accents.",
+                    "Favor a graphic arrangement with a different lighting direction and shadow shape.",
+                )
+                dimensions = (
+                    "camera angle or distance, jewelry arrangement, negative space, surface and prop placement, "
+                    "background geometry, and lighting direction"
+                )
+                identity_lock = (
+                    "Keep the jewelry design, materials, stone count, proportions, and quantity exactly faithful."
+                )
+                variation_requirement = (
+                    "Always change the jewelry orientation or position and the camera angle or distance from "
+                    "the other looks. Also change at least two of these supporting decisions"
+                )
+            else:
+                variation_lanes = (
+                    "Favor an intimate editorial composition with restrained environmental detail.",
+                    "Favor more environmental context, a different body and face angle, and asymmetric placement.",
+                    "Favor a candid gesture or sense of movement from a new camera height.",
+                    "Favor clean negative space and a composed editorial posture viewed from another side.",
+                )
+                dimensions = (
+                    "camera distance or crop, body orientation and pose, subject placement, wardrobe details, "
+                    "background layout, seasonal accents, and lighting angle"
+                )
+                identity_lock = (
+                    "Keep the model identity and the jewelry design, scale, placement, and materials exactly faithful."
+                )
+                variation_requirement = "Change at least three of these non-product decisions"
+
+            prompts = []
+            for index in range(count):
+                lane = variation_lanes[index % len(variation_lanes)]
+                prompts.append(
+                    f"{prompt}\n\n"
+                    f"MULTI-IMAGE DIVERSITY — LOOK {index + 1} OF {count}\n"
+                    "This look must be visibly distinct from every other look in this set, not a near-duplicate. "
+                    f"{variation_requirement}: {dimensions}. "
+                    f"{lane} {identity_lock}"
+                )
+        else:
+            prompts = [prompt for _ in range(count)]
 
     return {
         "prompts": prompts,
-        "negative_prompt": negative_prompt,
+        "negative_prompt": compose_negative_prompt(
+            negative_prompt,
+            extras=[creative_exclusions] if creative_exclusions else None,
+        ),
     }
 
 
@@ -617,6 +675,15 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
             parts.append(f"\nSTYLE: {resolved_image_style['label'] if resolved_image_style else image_style}\n{image_style_text}")
 
         parts.append(f"\n{texts.get('quality', '')}")
+        creative_direction = str(style.get("creative_direction") or "").strip()
+        if creative_direction:
+            parts.append(
+                "\nCURATED CREATIVE DIRECTION\n"
+                f"{creative_direction}\n"
+                "Treat this direction as a flexible creative guardrail while preserving all "
+                "jewelry fidelity and safety rules above. Vary nonessential styling, props, "
+                "framing, and composition between generations."
+            )
         prompt = "\n".join(parts)
     else:
         item_description = _resolve_first_item_type(items, style, aliases, mapping) or "jewelry"
@@ -686,6 +753,16 @@ def _render_on_model_sections(definition: dict[str, Any], payload: dict[str, Any
                 style_text += f"\n{image_style} — {image_style_text}"
         parts.append(f"STYLE\n{style_text}")
         parts.append(f"QUALITY CONTROL & RULES\n{texts.get('rules', '')}")
+
+        creative_direction = str(style.get("creative_direction") or "").strip()
+        if creative_direction:
+            parts.append(
+                "CURATED CREATIVE DIRECTION\n"
+                f"{creative_direction}\n"
+                "Treat this direction as a flexible creative guardrail while preserving all "
+                "jewelry fidelity and safety rules above. Vary nonessential styling, props, "
+                "framing, and composition between generations."
+            )
 
         prompt = "\n\n".join(filter(None, parts))
 
@@ -834,7 +911,10 @@ def _render_pure_jewelry_sections(definition: dict[str, Any], payload: dict[str,
 
     if config:
         for category_id, category_name, options in config.get("categories", []):
-            selected = str(style.get(category_id) or "").strip()
+            selected_value = style.get(category_id)
+            if category_id == "object-territory":
+                selected_value = style.get("creative_object_territory") or selected_value
+            selected = str(selected_value or "").strip()
             if not selected or selected == "None":
                 continue
             resolved_option = _resolve_option_selection(options or {}, selected)
@@ -845,6 +925,15 @@ def _render_pure_jewelry_sections(definition: dict[str, Any], payload: dict[str,
                 parts.append(f"\n{category_name}: {resolved_option['label']}\n{prompt}")
 
     parts.append(f"\n{definition.get('quality', '')}")
+    creative_direction = str(style.get("creative_direction") or "").strip()
+    if creative_direction:
+        parts.append(
+            "\nCURATED CREATIVE DIRECTION\n"
+            f"{creative_direction}\n"
+            "Treat this direction as a flexible creative guardrail while preserving all "
+            "jewelry fidelity and safety rules above. Vary nonessential styling, props, "
+            "framing, and composition between generations."
+        )
     prompt = "\n".join(parts)
 
     return _finalize_image_prompts(

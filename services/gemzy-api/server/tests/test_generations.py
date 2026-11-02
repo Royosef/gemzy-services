@@ -96,6 +96,88 @@ def generation_payload() -> dict[str, Any]:
     }
 
 
+def test_generation_style_resolves_server_managed_fields_from_preset(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_payload: dict[str, Any],
+) -> None:
+    preset_id = "0d4cb132-fdd7-4a22-ac19-b67d30a51553"
+    monkeypatch.setattr(
+        generations,
+        "get_client",
+        lambda: _PresetClient(
+            [
+                {
+                    "id": preset_id,
+                    "task_key": "on-model",
+                    "style": {
+                        "creative_direction": "SERVER CURATED DIRECTION",
+                        "creative_exclusions": "SERVER CURATED EXCLUSIONS",
+                        "creative_variation_lanes": "SERVER LANE ONE||SERVER LANE TWO",
+                        "creative_object_territory": "Jewelry Presentation Box",
+                    },
+                }
+            ]
+        ),
+    )
+    generation_payload["presetId"] = preset_id
+    generation_payload["style"] = {
+        "task_type": "on-model",
+        "background": "Warm Interior",
+        "creative_direction": "CLIENT OVERRIDE",
+    }
+    payload = generations.CreateGenerationPayload.model_validate(generation_payload)
+
+    resolved = generations._resolve_generation_style(payload)
+
+    assert resolved["background"] == "Warm Interior"
+    assert resolved["creative_direction"] == "SERVER CURATED DIRECTION"
+    assert resolved["creative_exclusions"] == "SERVER CURATED EXCLUSIONS"
+    assert resolved["creative_variation_lanes"] == "SERVER LANE ONE||SERVER LANE TWO"
+    assert resolved["creative_object_territory"] == "Jewelry Presentation Box"
+
+
+def test_generation_style_drops_server_managed_fields_without_preset(
+    generation_payload: dict[str, Any],
+) -> None:
+    generation_payload["style"] = {
+        "task_type": "on-model",
+        "creative_direction": "CLIENT ONLY DIRECTION",
+    }
+    payload = generations.CreateGenerationPayload.model_validate(generation_payload)
+
+    resolved = generations._resolve_generation_style(payload)
+
+    assert "creative_direction" not in resolved
+
+
+def test_generation_style_rejects_preset_for_another_task(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_payload: dict[str, Any],
+) -> None:
+    preset_id = "0d4cb132-fdd7-4a22-ac19-b67d30a51553"
+    monkeypatch.setattr(
+        generations,
+        "get_client",
+        lambda: _PresetClient(
+            [
+                {
+                    "id": preset_id,
+                    "task_key": "pure-jewelry",
+                    "style": {"creative_direction": "WRONG TASK"},
+                }
+            ]
+        ),
+    )
+    generation_payload["presetId"] = preset_id
+    generation_payload["style"] = {"task_type": "on-model"}
+    payload = generations.CreateGenerationPayload.model_validate(generation_payload)
+
+    with pytest.raises(HTTPException) as exc_info:
+        generations._resolve_generation_style(payload)
+
+    assert exc_info.value.status_code == 400
+
+
 class _MockResponse:
     def __init__(self, status_code: int = 200, payload: dict[str, Any] | None = None) -> None:
         self.status_code = status_code
@@ -125,6 +207,32 @@ class _MockAsyncClient:
     ) -> _MockResponse:
         self.calls.append((url, json, headers or {}))
         return _MockResponse()
+
+
+class _PresetQuery:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def select(self, _columns: str) -> "_PresetQuery":
+        return self
+
+    def eq(self, _column: str, _value: Any) -> "_PresetQuery":
+        return self
+
+    def limit(self, _value: int) -> "_PresetQuery":
+        return self
+
+    def execute(self) -> SimpleNamespace:
+        return SimpleNamespace(data=self._rows)
+
+
+class _PresetClient:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def table(self, name: str) -> _PresetQuery:
+        assert name == "creation_look_presets"
+        return _PresetQuery(self._rows)
 
 
 class _CreditTable:

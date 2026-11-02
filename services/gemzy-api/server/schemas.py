@@ -426,6 +426,7 @@ class CreateGenerationPayload(BaseModel):
     """Payload sent by the client to start a generation job."""
 
     generationServerUrl: str | None = None
+    presetId: str | None = None
     uploads: list[GenerationUploadPayload]
     items: list[ItemPayload] = Field(default_factory=list)
     model: GenerationModelPayload
