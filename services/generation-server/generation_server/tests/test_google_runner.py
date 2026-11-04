@@ -39,12 +39,18 @@ class StubImageConfig:
         self.kwargs = kwargs
 
 
+class StubThinkingConfig:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
 google_runner.genai_types = SimpleNamespace(  # type: ignore[attr-defined]
     Blob=StubBlob,
     Part=StubPart,
     Content=StubContent,
     GenerateContentConfig=StubGenerationConfig,
     ImageConfig=StubImageConfig,
+    ThinkingConfig=StubThinkingConfig,
 )
 
 
@@ -149,7 +155,7 @@ def test_generate_round_robins_configured_models():
     client = DummyClient(response)
     runner = GoogleGeminiRunner(
         api_key="secret",
-        models=("gemini-3-pro-image", "gemini-3.1-flash-image"),
+        models=("gemini-3-pro-image", "gemini-nano-banana-2.1"),
         client=client,
     )
 
@@ -168,9 +174,14 @@ def test_generate_round_robins_configured_models():
 
     assert [call["model"] for call in client.calls] == [
         "gemini-3-pro-image",
-        "gemini-3.1-flash-image",
+        "gemini-nano-banana-2.1",
         "gemini-3-pro-image",
     ]
+    assert "thinking_config" not in client.calls[0]["config"].kwargs
+    assert client.calls[1]["config"].kwargs["thinking_config"].kwargs == {
+        "thinking_level": "HIGH"
+    }
+    assert "thinking_config" not in client.calls[2]["config"].kwargs
 
 
 def test_generate_labels_jewelry_and_model_references_separately():
@@ -203,6 +214,12 @@ def test_generate_labels_jewelry_and_model_references_separately():
 
     assert any(
         "ignore them" in text and "jewelry/product inputs only" in text
+        for text in texts
+    )
+    assert any(
+        "immutable product specification" in text
+        and "exact count, order, spacing" in text
+        and "product fidelity wins" in text
         for text in texts
     )
     assert any(

@@ -43,6 +43,10 @@ def test_on_model_appends_curated_creative_direction() -> None:
     assert "SEASONAL_ON_MODEL_SENTINEL" in prompt
     assert "flexible creative guardrail" in prompt
     assert "Vary nonessential styling, props, framing, and composition" in prompt
+    assert "PRODUCT FIDELITY OVERRIDE" in prompt
+    assert "immutable product specification" in prompt
+    assert "exact count, order, spacing" in prompt
+    assert "product fidelity wins" in prompt
 
 
 def test_pure_jewelry_appends_curated_creative_direction() -> None:

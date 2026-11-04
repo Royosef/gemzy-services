@@ -64,6 +64,10 @@ Subtle natural asymmetry preserved. The model feels inhabited, not rendered."""
 
 _ON_MODEL_V45_QUALITY = """QUALITY CONTROL — ALL RULES ARE ABSOLUTE:
 
+PRODUCT FIDELITY OVERRIDE: Treat every uploaded jewelry image as an immutable product specification, never as loose inspiration. The generated scene, model pose, styling, lighting, and camera treatment may change; the jewelry product may not. If any aesthetic, editorial, composition, preset, or creative-direction instruction conflicts with product fidelity, product fidelity wins.
+
+EXACT PRODUCT PRESERVATION: Reproduce the exact uploaded product. Preserve its geometry, proportions, silhouette, topology, construction, orientation on the body, relative scale, and every visible stone, crystal, bead, pearl, link, setting, prong, clasp, connector, engraving, edge, opening, and repeated element, including exact count, order, spacing, size relationships, and placement. Preserve exact materials, metal color, gemstone colors, transparency, finish, texture, reflectivity, and mixed-material boundaries. Keep enough jewelry pixels in frame for the smallest details to remain distinct. Do not redesign, stylize, simplify, merge, blur, substitute, recolor, resize, add, remove, repair, or reinterpret any jewelry detail. Do not repair asymmetry or invent hidden details.
+
 JEWELRY: 1) Always fully visible and unobstructed. 2) Complete material accuracy — realistic reflectivity, accurate gemstones, sharp edges. No sparkle effects, no lens flare. 3) Edges always sharp and readable. 4) Only the uploaded jewelry appears — nothing added, invented, or assumed. This cannot be overridden.
 
 SKIN: 5) Natural photographic realism — pores, texture, organic tone. No smoothing. 6) No moles, blemishes, or added skin marks. 7) Hands with correct anatomy — natural finger count, realistic joints. No distortion. 8) Eyes symmetrical and natural — no artificial glow or unnatural enhancement.

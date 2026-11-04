@@ -153,6 +153,13 @@ class GoogleGeminiRunner:
             )
 
 
+        selected_model = self._next_model()
+        generation_config_kwargs: dict[str, Any] = {}
+        if selected_model == "gemini-nano-banana-2.1":
+            generation_config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                thinking_level="HIGH"
+            )
+
         generation_config = genai_types.GenerateContentConfig(
             temperature=0.2,
             candidate_count=1,
@@ -161,12 +168,13 @@ class GoogleGeminiRunner:
                 aspect_ratio=aspect,
                 output_mime_type="image/png",
             ),
+            **generation_config_kwargs,
         )
 
         response = self._generate_content_with_retries(
             contents=contents,
             generation_config=generation_config,
-            model=self._next_model(),
+            model=selected_model,
         )
 
         image_bytes = self._extract_image_bytes(response)
@@ -331,8 +339,17 @@ class GoogleGeminiRunner:
                     text=(
                         "The following numbered image references are jewelry/product inputs only. "
                         "Treat each label as authoritative metadata for the image immediately after it. "
-                        "Use them only for jewelry design, gemstones, materials, scale, "
-                        "and placement cues. If any people, faces, bodies, hair, clothing, "
+                        "Treat each uploaded jewelry image as an immutable product specification, "
+                        "not as inspiration. Reproduce the exact product and preserve its geometry, "
+                        "proportions, silhouette, topology, construction, relative scale, materials, "
+                        "colors, finish, and every visible stone, crystal, bead, pearl, link, setting, "
+                        "prong, clasp, connector, engraving, edge, opening, and repeated element, "
+                        "including their exact count, order, spacing, size relationships, and placement. "
+                        "Do not redesign, stylize, simplify, merge, blur, substitute, recolor, resize, "
+                        "add, remove, repair, or reinterpret any jewelry detail. The scene, pose, styling, "
+                        "lighting, and camera treatment may change; the jewelry product may not. If product "
+                        "fidelity conflicts with aesthetics or creative direction, product fidelity wins. "
+                        "If any people, faces, bodies, hair, clothing, "
                         "or persona traits appear in those jewelry images, ignore them."
                     )
                 )
