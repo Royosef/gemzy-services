@@ -141,7 +141,101 @@ def test_prompt_includes_medium_size_guidance():
     prompt = build_prompts(req)[0]
 
     assert "JEWELRY SIZE: Medium" in prompt
-    assert "The piece is moderate in scale" in prompt
+    assert "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE" in prompt
+    assert "moderate physical scale relative to the adjacent anatomy" in prompt
+
+
+@pytest.mark.parametrize("public_version_key", ["v2", "v4.5"])
+def test_on_model_very_small_size_is_wearer_relative(public_version_key: str):
+    req = _base_request()
+    req.style["public_version_key"] = public_version_key
+    req.items = [
+        GenerationItem(id="i1", type="Earrings", size="Very Small", uploadId="u1"),
+    ]
+
+    prompt = build_prompts(req)[0]
+
+    assert "JEWELRY SIZE: Very Small" in prompt or "SCALE & PROPORTION" in prompt
+    assert "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE" in prompt
+    assert "source image crop and pixel size are not evidence of physical size" in prompt
+    assert "product-to-anatomy size ratio must remain very small" in prompt
+    assert "scale each earring separately; never treat the pair as one combined object" in prompt
+    assert "entire intact product" not in prompt
+
+
+def test_v45_size_fidelity_treats_an_earring_set_as_separate_pieces():
+    req = _base_request()
+    req.style["public_version_key"] = "v4.5"
+    req.items = [
+        GenerationItem(id="i1", type="Earrings", size="Very Small", uploadId="u1"),
+    ]
+
+    prompt = build_prompts(req)[0]
+
+    assert "scale each distinct piece independently" in prompt
+    assert "Never fuse, group, or co-locate separate pieces" in prompt
+    assert "never let scale override the one-earring-per-ear placement grid" in prompt
+
+
+@pytest.mark.parametrize("public_version_key", ["v2", "v4.5"])
+def test_on_model_earrings_preserve_mismatched_pair(public_version_key: str):
+    req = _base_request()
+    req.style["public_version_key"] = public_version_key
+    req.items = [
+        GenerationItem(id="i1", type="Earrings", size="Medium", uploadId="u1"),
+    ]
+
+    prompt = build_prompts(req)[0]
+
+    assert "two non-identical earrings" in prompt
+    assert "EAR PLACEMENT GRID" in prompt
+    assert "strict [1 left, 1 right] distribution" in prompt
+    assert "Never place both product earrings on the same ear" in prompt
+    assert "overrides conflicting pose, hair, camera" in prompt
+    assert "Never duplicate one design" in prompt
+
+
+def test_v52_pure_jewelry_earrings_preserve_mismatched_pair():
+    req = _base_request()
+    req.model.slug = "pure-jewelry"
+    req.style.update(
+        {
+            "task_type": "pure-jewelry",
+            "public_version_key": "v5.2",
+            "style_type": "pure-studio",
+        }
+    )
+    req.items = [
+        GenerationItem(id="i1", type="Earrings", size="Medium", uploadId="u1"),
+    ]
+
+    prompt = build_prompts(req)[0]
+
+    assert "two non-identical earrings" in prompt
+    assert "both distinct pieces are the product" in prompt
+    assert "Never duplicate one design" in prompt
+
+
+def test_v52_pure_jewelry_very_small_size_uses_scene_scale_cues():
+    req = _base_request()
+    req.model.slug = "pure-jewelry"
+    req.style.update(
+        {
+            "task_type": "pure-jewelry",
+            "public_version_key": "v5.2",
+            "style_type": "pure-studio",
+        }
+    )
+    req.items = [
+        GenerationItem(id="i1", type="Ring", size="Very Small", uploadId="u1"),
+    ]
+
+    prompt = build_prompts(req)[0]
+
+    assert "JEWELRY SIZE: Very Small" in prompt
+    assert "SCENE-RELATIVE PHYSICAL SCALE OVERRIDE" in prompt
+    assert "Surface grain, contact shadow, permitted props, and generous negative space" in prompt
+    assert "must never read as large relative to its environment" in prompt
 
 
 def test_v45_prompt_uses_html_section_labels():

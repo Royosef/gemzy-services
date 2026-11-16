@@ -220,6 +220,15 @@ def test_generate_labels_jewelry_and_model_references_separately():
         "immutable product specification" in text
         and "exact count, order, spacing" in text
         and "product fidelity wins" in text
+        and "two non-identical earrings" in text
+        and "LEFT EAR has exactly one product earring" in text
+        and "strict [1 left, 1 right] distribution" in text
+        and "never place both designs on the same ear" in text
+        and "selected size as authoritative for physical worn scale" in text
+        and "source image's crop or pixel size" in text
+        and "scale each distinct piece independently" in text
+        and "never fuse, group, or co-locate separate pieces" in text
+        and "scale never overrides the one-earring-per-ear grid" in text
         for text in texts
     )
     assert any(

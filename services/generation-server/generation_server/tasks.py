@@ -136,6 +136,143 @@ def _resolve_prompts(
     return [str(value) for value in (rendered_prompt.get("prompts") or [])]
 
 
+def _append_mismatched_earring_pair_fidelity(
+    request: GenerationRequest,
+    prompts: list[str],
+) -> list[str]:
+    """Keep a two-design earring image intact across every engine/provider."""
+
+    item_types = {
+        str(item.type or "").strip().casefold()
+        for item in request.items
+    }
+    style_product = str(request.style.get("product") or "").strip().casefold()
+    if not item_types.intersection({"earring", "earrings"}) and style_product not in {
+        "earring",
+        "earrings",
+    }:
+        return prompts
+
+    task_type = str(request.style.get("task_type") or request.model.slug).strip().casefold()
+    is_pure_jewelry = task_type.startswith("pure-jewelry") or request.model.slug == "pure-jewelry"
+    placement_rule = (
+        "Show both distinct pieces in the final product composition."
+        if is_pure_jewelry
+        else (
+            "EAR PLACEMENT GRID — LEFT EAR: exactly one uploaded earring attached at the left "
+            "earlobe. RIGHT EAR: exactly one uploaded earring attached at the right earlobe. "
+            "TOTAL: exactly two visible earrings with a strict [1 left, 1 right] distribution, "
+            "never [2, 0] or [0, 2]. If the reference contains two non-identical designs, assign "
+            "one distinct design to each ear. No ear may carry both uploaded designs or more than "
+            "one product earring. Use a frontal or near-frontal head angle, expose both ears, and "
+            "keep hair behind both ears. This placement grid overrides any conflicting pose, hair, "
+            "camera, crop, or creative-direction instruction."
+        )
+    )
+    directive = (
+        "MISMATCHED EARRING PAIR FIDELITY — Inspect the complete jewelry reference before "
+        "deciding whether it contains a single earring, a matching pair, or two non-identical "
+        "earrings. A single reference image can contain multiple separate pieces. If it contains "
+        "two non-identical earrings, treat them as one intentional mismatched pair and preserve "
+        "both designs independently. Never duplicate one earring, merge their details, mirror "
+        "them into a matching pair, invent a mate, or omit either piece. "
+        f"{placement_rule}"
+    )
+    return [f"{prompt}\n\n{directive}" for prompt in prompts]
+
+
+def _append_earring_placement_negatives(
+    request: GenerationRequest,
+    negative_prompt: str,
+) -> str:
+    """Reject the common [2, 0] placement failure for on-model earrings."""
+
+    task_type = str(request.style.get("task_type") or request.model.slug).strip().casefold()
+    is_pure_jewelry = task_type.startswith("pure-jewelry") or request.model.slug == "pure-jewelry"
+    has_earrings = any(
+        str(item.type or "").strip().casefold() in {"earring", "earrings"}
+        for item in request.items
+    ) or str(request.style.get("product") or "").strip().casefold() in {
+        "earring",
+        "earrings",
+    }
+    if is_pure_jewelry or not has_earrings:
+        return negative_prompt
+
+    placement_negatives = (
+        "two product earrings on the same ear, both uploaded earring designs on one ear, "
+        "stacked product earrings, clustered product earrings, multiple product piercings on one ear, "
+        "[2, 0] earring distribution, [0, 2] earring distribution, empty opposite ear, bare opposite ear, "
+        "only one visible ear, profile pose hiding one ear, hair covering either ear"
+    )
+    return ", ".join(part for part in (negative_prompt.strip(), placement_negatives) if part)
+
+
+_JEWELRY_SCALE_RULES = {
+    "very small": (
+        "Use the smallest plausible physical scale. The product must occupy only a minimal "
+        "fraction of the relevant anatomy or scene-scale cues and must read as delicate, not statement-sized."
+    ),
+    "small": (
+        "Use a small, understated physical scale. The product must remain clearly subordinate "
+        "to the relevant anatomy or scene-scale cues."
+    ),
+    "medium": (
+        "Use a moderate physical scale. The product may be noticeable but must not dominate "
+        "the relevant anatomy or scene-scale cues."
+    ),
+    "big": "Use a large, statement physical scale while keeping it physically plausible.",
+    "very big": "Use a very large, dominant physical scale while keeping it physically plausible.",
+}
+
+
+def _append_jewelry_scale_fidelity(
+    request: GenerationRequest,
+    prompts: list[str],
+) -> list[str]:
+    """Make selected physical size authoritative over an isolated product crop."""
+
+    sized_items = [
+        (index, item, _JEWELRY_SCALE_RULES.get(str(item.size or "").strip().casefold()))
+        for index, item in enumerate(request.items, start=1)
+    ]
+    sized_items = [entry for entry in sized_items if entry[2]]
+    if not sized_items:
+        return prompts
+
+    item_rules = " ".join(
+        f"Item {index} ({item.type}, selected size {item.size}): {rule}"
+        for index, item, rule in sized_items
+    )
+    task_type = str(request.style.get("task_type") or request.model.slug).strip().casefold()
+    is_pure_jewelry = task_type.startswith("pure-jewelry") or request.model.slug == "pure-jewelry"
+    scale_context = (
+        "For this jewelry-only image, communicate physical scale through surface texture, contact "
+        "shadows, permitted props, and negative space. A close or macro camera may reveal detail, "
+        "but it must not make the product read as physically large relative to the scene."
+        if is_pure_jewelry
+        else (
+            "For this on-model image, judge physical scale against the ear, face, neck, hand, wrist, "
+            "or other wearing zone. A close camera may reveal detail, but it must not increase the "
+            "product-to-anatomy size ratio."
+        )
+    )
+    directive = (
+        "JEWELRY PHYSICAL SCALE OVERRIDE — The selected size describes each distinct jewelry "
+        "piece's physical scale relative to the model or scene, not how large the set appears in the source "
+        "photo or final crop. An isolated catalog image provides no body- or scene-relative scale. "
+        "A source image is only a container and may hold multiple separate pieces. Uniformly scale each "
+        "distinct piece independently to the selected size while preserving all "
+        "geometry, component proportions, counts, spacing, and materials. This required whole-piece "
+        "scaling is not a redesign and overrides any generic instruction not to resize the product. "
+        "Never fuse, group, or co-locate separate pieces merely because they share one source image. "
+        "For an earring set, size each earring independently; this scale instruction never overrides "
+        "the ear placement grid. "
+        f"{scale_context} {item_rules}"
+    )
+    return [f"{prompt}\n\n{directive}" for prompt in prompts]
+
+
 async def generate_looks(
     *,
     settings: Settings,
@@ -280,6 +417,12 @@ async def process_generation_job(payload: GenerationJobPayload) -> None:
         else:
             prompts = _resolve_prompts(request, rendered_prompt)
             negative_prompt = str(rendered_prompt.get("negative_prompt") or "")
+
+        prompts = _append_jewelry_scale_fidelity(request, prompts)
+        # Placement intentionally comes last: a multi-piece set must never be
+        # treated as one combined object by the physical-scale instruction.
+        prompts = _append_mismatched_earring_pair_fidelity(request, prompts)
+        negative_prompt = _append_earring_placement_negatives(request, negative_prompt)
 
         runner = _get_runner()
 

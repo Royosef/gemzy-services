@@ -129,6 +129,192 @@ def _pure_jewelry_payload(style: dict[str, str] | None = None) -> GenerationJobP
     )
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_placement"),
+    [
+        (
+            _payload(
+                model_image_uri="https://example.com/original-model.png",
+                model_image_base64="bW9kZWwtaW1hZ2U=",
+            ),
+            "strict [1 left, 1 right] distribution",
+        ),
+        (
+            _pure_jewelry_payload(),
+            "Show both distinct pieces in the final product composition",
+        ),
+    ],
+)
+def test_mismatched_earring_pair_fidelity_is_engine_independent(
+    payload: GenerationJobPayload,
+    expected_placement: str,
+) -> None:
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Earrings",
+            size="Medium",
+            uploadId="upload-1",
+        )
+    ]
+
+    prompts = tasks._append_mismatched_earring_pair_fidelity(
+        payload.request,
+        ["engine-owned prompt"],
+    )
+
+    assert prompts[0].startswith("engine-owned prompt")
+    assert "MISMATCHED EARRING PAIR FIDELITY" in prompts[0]
+    assert "two non-identical earrings" in prompts[0]
+    assert expected_placement in prompts[0]
+
+
+def test_on_model_earrings_reject_same_ear_placement() -> None:
+    payload = _payload(
+        model_image_uri="https://example.com/original-model.png",
+        model_image_base64="bW9kZWwtaW1hZ2U=",
+    )
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Earrings",
+            size="Very Small",
+            uploadId="upload-1",
+        )
+    ]
+
+    negative_prompt = tasks._append_earring_placement_negatives(
+        payload.request,
+        "existing negative",
+    )
+
+    assert negative_prompt.startswith("existing negative")
+    assert "two product earrings on the same ear" in negative_prompt
+    assert "[2, 0] earring distribution" in negative_prompt
+    assert "empty opposite ear" in negative_prompt
+    assert "profile pose hiding one ear" in negative_prompt
+
+
+def test_pure_jewelry_does_not_apply_on_model_ear_negatives() -> None:
+    payload = _pure_jewelry_payload()
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Earrings",
+            size="Very Small",
+            uploadId="upload-1",
+        )
+    ]
+
+    negative_prompt = tasks._append_earring_placement_negatives(
+        payload.request,
+        "existing negative",
+    )
+
+    assert negative_prompt == "existing negative"
+
+
+def test_mismatched_earring_pair_fidelity_leaves_other_jewelry_unchanged() -> None:
+    payload = _pure_jewelry_payload()
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Ring",
+            size="Medium",
+            uploadId="upload-1",
+        )
+    ]
+
+    prompts = tasks._append_mismatched_earring_pair_fidelity(
+        payload.request,
+        ["engine-owned prompt"],
+    )
+
+    assert prompts == ["engine-owned prompt"]
+
+
+def test_very_small_scale_overrides_source_crop_without_changing_design() -> None:
+    payload = _payload(
+        model_image_uri="https://example.com/original-model.png",
+        model_image_base64="bW9kZWwtaW1hZ2U=",
+    )
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Earrings",
+            size="Very Small",
+            uploadId="upload-1",
+        )
+    ]
+
+    prompts = tasks._append_jewelry_scale_fidelity(
+        payload.request,
+        ["engine-owned prompt"],
+    )
+
+    assert "JEWELRY PHYSICAL SCALE OVERRIDE" in prompts[0]
+    assert "selected size Very Small" in prompts[0]
+    assert "smallest plausible physical scale" in prompts[0]
+    assert "isolated catalog image provides no body- or scene-relative scale" in prompts[0]
+    assert "overrides any generic instruction not to resize" in prompts[0]
+    assert "preserving all geometry, component proportions" in prompts[0]
+    assert "scale each distinct piece independently" in prompts[0]
+    assert "Never fuse, group, or co-locate separate pieces" in prompts[0]
+    assert "scale instruction never overrides the ear placement grid" in prompts[0]
+
+
+def test_ear_placement_is_final_after_size_for_a_two_piece_set() -> None:
+    payload = _payload(
+        model_image_uri="https://example.com/original-model.png",
+        model_image_base64="bW9kZWwtaW1hZ2U=",
+    )
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Earrings",
+            size="Very Small",
+            uploadId="upload-1",
+        )
+    ]
+
+    prompts = tasks._append_jewelry_scale_fidelity(
+        payload.request,
+        ["engine-owned prompt"],
+    )
+    prompts = tasks._append_mismatched_earring_pair_fidelity(
+        payload.request,
+        prompts,
+    )
+
+    prompt = prompts[0]
+    assert prompt.index("JEWELRY PHYSICAL SCALE OVERRIDE") < prompt.rindex("EAR PLACEMENT GRID")
+    assert prompt.rstrip().endswith(
+        "This placement grid overrides any conflicting pose, hair, camera, crop, or creative-direction instruction."
+    )
+
+
+def test_pure_jewelry_scale_uses_scene_cues_instead_of_anatomy() -> None:
+    payload = _pure_jewelry_payload()
+    payload.request.items = [
+        GenerationItem(
+            id="item-1",
+            type="Ring",
+            size="Very Small",
+            uploadId="upload-1",
+        )
+    ]
+
+    prompts = tasks._append_jewelry_scale_fidelity(
+        payload.request,
+        ["engine-owned prompt"],
+    )
+
+    assert "For this jewelry-only image" in prompts[0]
+    assert "surface texture, contact shadows, permitted props, and negative space" in prompts[0]
+    assert "must not make the product read as physically large relative to the scene" in prompts[0]
+    assert "product-to-anatomy size ratio" not in prompts[0]
+
+
 class _Runner:
     supports_parallel_look_generation = True
 

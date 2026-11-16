@@ -66,7 +66,7 @@ _ON_MODEL_V45_QUALITY = """QUALITY CONTROL — ALL RULES ARE ABSOLUTE:
 
 PRODUCT FIDELITY OVERRIDE: Treat every uploaded jewelry image as an immutable product specification, never as loose inspiration. The generated scene, model pose, styling, lighting, and camera treatment may change; the jewelry product may not. If any aesthetic, editorial, composition, preset, or creative-direction instruction conflicts with product fidelity, product fidelity wins.
 
-EXACT PRODUCT PRESERVATION: Reproduce the exact uploaded product. Preserve its geometry, proportions, silhouette, topology, construction, orientation on the body, relative scale, and every visible stone, crystal, bead, pearl, link, setting, prong, clasp, connector, engraving, edge, opening, and repeated element, including exact count, order, spacing, size relationships, and placement. Preserve exact materials, metal color, gemstone colors, transparency, finish, texture, reflectivity, and mixed-material boundaries. Keep enough jewelry pixels in frame for the smallest details to remain distinct. Do not redesign, stylize, simplify, merge, blur, substitute, recolor, resize, add, remove, repair, or reinterpret any jewelry detail. Do not repair asymmetry or invent hidden details.
+EXACT PRODUCT PRESERVATION: Reproduce every distinct jewelry piece in the uploaded product image. Preserve each piece's geometry, internal proportions, silhouette, topology, construction, orientation on the body, and every visible stone, crystal, bead, pearl, link, setting, prong, clasp, connector, engraving, edge, opening, and repeated element, including exact count, order, spacing, size relationships, and placement. Preserve exact materials, metal color, gemstone colors, transparency, finish, texture, reflectivity, and mixed-material boundaries. Keep enough jewelry pixels in frame for the smallest details to remain distinct. Do not redesign, stylize, simplify, merge, blur, substitute, recolor, add, remove, repair, or reinterpret any jewelry detail. A source image is a container and may contain multiple separate pieces. Uniformly scale each distinct piece independently to the user's selected wearer-relative size; this is required and is not a redesign. An isolated product image does not define physical scale relative to a person; the selected size metadata is authoritative. Never fuse, group, or co-locate separate pieces because they share one source image. For an earring set, scale each earring independently and never let scale override the one-earring-per-ear placement grid. Never resize individual components within a piece relative to one another. Do not repair asymmetry or invent hidden details.
 
 JEWELRY: 1) Always fully visible and unobstructed. 2) Complete material accuracy — realistic reflectivity, accurate gemstones, sharp edges. No sparkle effects, no lens flare. 3) Edges always sharp and readable. 4) Only the uploaded jewelry appears — nothing added, invented, or assumed. This cannot be overridden.
 
@@ -80,6 +80,14 @@ FINAL: 17) Would the photo editor of Vogue, Harper's Bazaar, or AnOther Magazine
 
 _ON_MODEL_PROMPT_VERSION_V2 = "v2"
 _ON_MODEL_PROMPT_VERSION_V45 = "v4.5"
+
+_ON_MODEL_JEWELRY_SIZE_PROMPTS = {
+    "Very Small": "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE: Each distinct jewelry piece in the source image is independently worn at a very small physical scale relative to the adjacent anatomy. Each piece occupies only a minimal fraction of the ear, neck, finger, wrist, or other wearing zone. For an earring set, scale each earring separately; never treat the pair as one combined object. Each earring stays compact relative to its own earlobe and ear and never dominates the side of the face. The source image crop and pixel size are not evidence of physical size. The camera may move closer for detail, but the product-to-anatomy size ratio must remain very small.",
+    "Small": "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE: Each distinct jewelry piece in the source image is independently worn at a small, understated physical scale relative to the adjacent anatomy. For an earring set, scale each earring separately; never treat the pair as one combined object. Each piece is clearly subordinate to its own ear, neck, hand, wrist, or other wearing zone. The source image crop and pixel size are not evidence of physical size. A closer camera may reveal detail but must not increase the product-to-anatomy size ratio.",
+    "Medium": "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE: Each distinct jewelry piece in the source image is independently worn at a moderate physical scale relative to the adjacent anatomy. For an earring set, scale each earring separately; never treat the pair as one combined object. Each piece is noticeable without dominating its own ear, neck, hand, wrist, or other wearing zone. The source image crop and pixel size are not evidence of physical size.",
+    "Big": "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE: Each distinct jewelry piece in the source image is independently worn at a large, statement physical scale relative to its adjacent anatomy while remaining physically plausible. For an earring set, scale each earring separately; never treat the pair as one combined object. Preserve every complete piece without cropping or changing its internal proportions.",
+    "Very Big": "WEARER-RELATIVE PHYSICAL SCALE OVERRIDE: Each distinct jewelry piece in the source image is independently worn at a very large, dominant physical scale relative to its adjacent anatomy while remaining wearable and physically plausible. For an earring set, scale each earring separately; never treat the pair as one combined object. Preserve every complete piece without cropping or changing its internal proportions.",
+}
 
 _ON_MODEL_MAPPING_V2 = {
     "background": {
@@ -150,7 +158,7 @@ _ON_MODEL_MAPPING_V2 = {
         "Grainy Film": "Subtle film grain across the image, slightly desaturated tones, soft contrast curve, organic texture in shadows and highlights, film-like photographic finish."
     },
     "jewelry": {
-        "Earring": "Subtle head positioning enhancing natural visibility, delicate light interaction around facial contours, fine detail clarity in small-scale elements.",
+        "Earring": "Subtle head positioning enhancing natural visibility, delicate light interaction around facial contours, fine detail clarity in small-scale elements. Inspect the complete jewelry reference before deciding whether it shows a single earring, a matching pair, or an intentional mismatched pair. EAR PLACEMENT GRID: left ear exactly one product earring; right ear exactly one product earring; exactly two visible earrings total in a strict [1 left, 1 right] distribution. Never place both product earrings on the same ear. When two non-identical earrings appear in one reference image, assign one distinct design to each ear and preserve both designs separately. Use a frontal or near-frontal head angle with both ears exposed and hair behind both ears. This placement overrides conflicting pose, hair, camera, or crop instructions. Never duplicate one design, merge their details, mirror them into a matching pair, invent a mate, or omit either piece.",
         "Necklace": "Natural alignment with body posture, soft interaction with skin and fabric, clear readability of central placement.",
         "Pendant": "Natural alignment with body posture, soft interaction with skin and fabric, clear readability of central placement.",
         "Choker": "Natural alignment with body posture, soft interaction with skin and fabric, clear readability of central placement.",
@@ -165,7 +173,8 @@ _ON_MODEL_MAPPING_V2 = {
         "Cufflinks": "Natural integration with clothing structure, precise detail visibility in small metallic forms, clean reflections on polished surfaces.",
         "Anklet": "Natural integration with body movement, soft interaction with skin and light, clear readability of delicate forms.",
         "Body Chain": "Natural integration with body movement, soft interaction with skin and light, clear readability of delicate forms."
-    }
+    },
+    "jewelry_size": dict(_ON_MODEL_JEWELRY_SIZE_PROMPTS),
 }
 
 _ON_MODEL_MAPPING_V45 = {
@@ -258,7 +267,7 @@ _ON_MODEL_MAPPING_V45 = {
         "Cinematic": "Teal-and-orange complementary grade — the color world of prestige cinema. Shadows pushed toward teal and cool blue-green. Highlights and skin pushed toward warm orange-amber. Skin rich and warm — golden-orange in highlights, neutral in midtones. A frame from a film that doesn't exist yet but absolutely should."
     },
     "jewelry": {
-        "Earrings": "Jewelry worn on the ear. The ear, earlobe, jaw line, and side of the neck are the compositional priority. At least one earring fully faces the camera with complete clarity. Hair, hands, and clothing never cover or obscure the earring.",
+        "Earrings": "Jewelry worn on the ears. Both ears, earlobes, the jaw line, and the sides of the neck are the compositional priority. Inspect the complete jewelry reference before deciding whether it shows a single earring, a matching pair, or an intentional mismatched pair. EAR PLACEMENT GRID: left ear exactly one product earring; right ear exactly one product earring; exactly two visible earrings total in a strict [1 left, 1 right] distribution. Never place both product earrings on the same ear. When two non-identical earrings appear in one reference image, assign one distinct design to each ear and preserve both designs separately. Use a frontal or near-frontal head angle with both ears exposed and hair behind both ears. This placement overrides conflicting pose, hair, camera, crop, or creative-direction instructions. Never duplicate one design, merge their details, mirror them into a matching pair, invent a mate, or omit either piece. Both earrings face the camera with complete clarity. Hair, hands, and clothing never cover either ear or earring.",
         "Necklace": "Jewelry worn around the neck against the chest or collarbone. The throat, collarbone, and upper chest are the compositional priority. The neckline always allows the necklace to be fully visible. The neck is elongated and unobstructed.",
         "Pendant": "Jewelry hanging from a chain against the center chest. The zone between the collarbone and mid-chest is the compositional priority. The pendant hangs freely and is fully visible. The chain is visible and unobstructed.",
         "Choker": "Jewelry sitting high on the neck, close to the throat. The neck zone between the jaw and collarbone is the compositional priority. The neck is fully exposed and elongated — the choker unobscured by the chin above or clothing below.",
@@ -274,13 +283,7 @@ _ON_MODEL_MAPPING_V45 = {
         "Anklet": "Jewelry worn around the ankle. The lower leg and ankle zone must be included in the frame — the anklet fully visible and unobstructed.",
         "Body Chain": "Jewelry draped across the torso — chest, waist, or back. The full torso zone is the compositional priority — the complete arc or drape of the chain is always visible.",
     },
-    "jewelry_size": {
-        "Very Small": "The piece is very small and delicate — minimal in scale, close to the skin. Framing and light are always close enough to make the piece clearly readable. The piece is never lost against skin or fabric.",
-        "Small": "The piece is small and refined — understated in scale. Light falls with enough precision to reveal its form and detail at normal portrait framing distance.",
-        "Medium": "The piece is moderate in scale — present and noticeable without dominating the frame. Treated as an equal partner to the face and body.",
-        "Big": "The piece is large and bold — commanding attention. The framing is always wide enough to contain it completely. The image treats it as a statement.",
-        "Very Big": "The piece is very large — a dominant sculptural presence. The composition is built around its scale. The model and environment exist in relationship to it, not the other way around."
-    }
+    "jewelry_size": dict(_ON_MODEL_JEWELRY_SIZE_PROMPTS),
 }
 
 _ON_MODEL_MAPPINGS = {
