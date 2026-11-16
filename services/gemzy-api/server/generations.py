@@ -24,6 +24,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from prompting.registry import ensure_default_prompt_registry, resolve_prompt_task_row
 from prompting.ui_catalog import resolve_generation_ui_catalog
 
+from .analytics import generation_context
 from .auth import get_current_user, get_optional_current_user
 from .content import (
     COLLECTIONS_CACHE_CONTROL,
@@ -2037,6 +2038,8 @@ async def _run_motion_generation_job(
                 "Failed to publish failure notification for motion job %s", job.id
             )
         logger.exception("Motion generation job %s failed", job.id)
+    finally:
+        to_response(job)  # Persist the terminal analytics fact even with no client polling.
 
 
 def _schedule_motion_generation_job(
@@ -2313,6 +2316,7 @@ async def create_image_edit(
         job_id,
         user.id,
         1,
+        analytics_context=generation_context(request, user),
         model_id=_image_edit_model_id(payload),
         model_name=_image_edit_model_name(payload),
         style=edit_payload.style or None,
@@ -2344,6 +2348,7 @@ async def create_image_edit(
                 )
         else:
             _refund_unfinished_reserved_credits(job)
+        to_response(job)
         raise
 
     if response.results:
@@ -2482,6 +2487,7 @@ async def create_motion_generation(
         job_id,
         user.id,
         payload.videoCount,
+        analytics_context=generation_context(request, user),
         model_id="motion-v1",
         model_name="Motion",
         style={"task_type": "motion", "prompt": payload.prompt},
@@ -2590,6 +2596,7 @@ async def create_generation(
         job_id,
         user.id,
         payload.looks,
+        analytics_context={**generation_context(request, user), "jewelry_ids": [item.id for item in (payload.items or [])], "jewelry_id": payload.items[0].id if payload.items and len(payload.items) == 1 else None},
         model_id=payload.model.id,
         model_name=payload.model.name,
         style=payload.style or None,
@@ -2607,6 +2614,7 @@ async def create_generation(
         mark_failed(job, GENERATION_START_FAILURE_MESSAGE)
         if not is_guest_generation:
             _refund_unfinished_reserved_credits(job)
+        to_response(job)
         raise
 
     # If the worker replies with immediate results, persist them now.
@@ -2833,7 +2841,7 @@ async def receive_generation_event(
             detail="Unsupported event type",
         )
 
-    job_state = to_response(job)
+    job_state = to_response(job, strict_analytics=True)
     if remaining_credits is not None:
         job_state["remainingCredits"] = remaining_credits
     return CreateGenerationResponse(**job_state)

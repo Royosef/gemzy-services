@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from .analytics import enabled as analytics_enabled, record_revenue
 from .auth import get_current_user
 from .credit_packs import match_credit_pack
 from .credits import schedule_next_credit_reset
@@ -478,6 +479,8 @@ async def rc_webhook(request: Request) -> dict:
     """
     
     # Auth check
+    if analytics_enabled() and not RC_WEBHOOK_AUTH:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="RevenueCat webhook authentication not configured")
     auth_header = request.headers.get("Authorization")
     if RC_WEBHOOK_AUTH and auth_header != RC_WEBHOOK_AUTH:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth")
@@ -505,6 +508,8 @@ async def rc_webhook(request: Request) -> dict:
             event_type,
         )
         return {"status": "ignored", "reason": SUBSCRIPTION_ACCOUNT_MISMATCH_CODE}
+
+    record_revenue(event)
 
     sb = get_client()
     

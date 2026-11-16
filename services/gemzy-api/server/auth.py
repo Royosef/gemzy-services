@@ -36,6 +36,8 @@ from supabase_auth.errors import AuthApiError
 from urllib.parse import quote, unquote
 from pydantic import BaseModel, Field
 
+from .analytics import record_registration
+
 from .schemas import (
     AuthResponse,
     MagicLinkRequest,
@@ -623,6 +625,7 @@ def verify_magic_link(request: Request, data: VerifyRequest) -> AuthResponse:
     profile = _maybe_reconcile_profile_from_revenuecat(res.user.id, profile) or {}
 
     profile = _ensure_monthly_credits(res.user.id, profile.get("plan"), profile)
+    record_registration(res.user.id, "email", _auth_user_created_at(res.user), data.analytics)
     return AuthResponse(
         token=Token(access=res.session.access_token, refresh=res.session.refresh_token),
         user=_build_user_state(
@@ -907,6 +910,7 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
         time.perf_counter() - started_at,
     )
     
+    record_registration(res.user.id, data.provider, _auth_user_created_at(res.user), data.analytics)
     return AuthResponse(
         token=Token(access=res.session.access_token, refresh=res.session.refresh_token),
         user=loggedUser,

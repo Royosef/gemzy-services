@@ -23,9 +23,11 @@ class VerifyRequest(BaseModel):
     """Payload to verify an emailed one-time code."""
     email: EmailStr
     token: str
+    analytics: dict[str, Any] = Field(default_factory=dict)
 
 
 class OAuthRequest(BaseModel):
+    analytics: dict[str, Any] = Field(default_factory=dict)
     provider: Literal["google", "apple"]
     token: str
     tokenType: Literal["auth_code", "id_token"] | None = None

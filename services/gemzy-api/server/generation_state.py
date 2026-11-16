@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+from .analytics import record_generation
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import RLock
@@ -40,6 +44,10 @@ class GenerationJob:
     credit_cost_per_look: int = 0
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    analytics_started_recorded: bool = False
+    analytics_terminal_pending: bool = False
+    analytics_terminal_recorded: bool = False
+    analytics_context: dict[str, Any] = field(default_factory=dict)
     lifecycle_lock: RLock = field(default_factory=RLock, repr=False, compare=False)
 
     def touch(self) -> None:
@@ -70,8 +78,10 @@ def create_job(
     edit_mode_trial_edits_remaining: int | None = None,
     reserved_credit_cost: int = 0,
     credit_cost_per_look: int = 0,
+    analytics_context: dict[str, Any] | None = None,
 ) -> GenerationJob:
     job = GenerationJob(
+        analytics_context=analytics_context or {},
         id=job_id,
         user_id=user_id,
         total_looks=total_looks,
@@ -93,7 +103,36 @@ def create_job(
     )
     with _LOCK:
         _JOBS[job_id] = job
+    _record_analytics(job)
     return job
+
+
+def _record_analytics(job, terminal=False, strict=False):
+    if terminal:
+        job.analytics_terminal_pending = True
+    if (terminal and job.analytics_terminal_recorded) or (not terminal and job.analytics_started_recorded):
+        return
+    try:
+        if terminal and not job.analytics_started_recorded:
+            record_generation(job)
+            job.analytics_started_recorded = True
+        record_generation(job, terminal=terminal)
+        if terminal:
+            job.analytics_terminal_recorded = True
+        else:
+            job.analytics_started_recorded = True
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to enqueue generation analytics for %s", job.id)
+        if strict:
+            raise
+
+
+def retry_generation_analytics():
+    with _LOCK:
+        jobs = list(_JOBS.values())
+    for job in jobs:
+        # Only retry terminal snapshots requested after refunds/settlement.
+        _record_analytics(job, terminal=job.analytics_terminal_pending)
 
 
 def get_job(job_id: str) -> Optional[GenerationJob]:
@@ -106,7 +145,9 @@ def delete_job(job_id: str) -> bool:
         return _JOBS.pop(job_id, None) is not None
 
 
-def to_response(job: GenerationJob) -> dict:
+def to_response(job: GenerationJob, *, strict_analytics: bool = False) -> dict:
+    if job.status in {"completed", "failed"}:
+        _record_analytics(job, terminal=True, strict=strict_analytics)
     payload = {
         "id": job.id,
         "status": job.status,

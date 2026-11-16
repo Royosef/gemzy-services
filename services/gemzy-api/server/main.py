@@ -351,3 +351,32 @@ async def root() -> dict:
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+
+
+_analytics_worker_task: asyncio.Task | None = None
+
+@app.on_event("startup")
+async def start_analytics_worker() -> None:
+    from .analytics import drain_outbox, enabled
+    from .generation_state import retry_generation_analytics
+    global _analytics_worker_task
+    if not enabled():
+        return
+    async def worker() -> None:
+        while True:
+            try:
+                await asyncio.to_thread(retry_generation_analytics)
+                await asyncio.to_thread(drain_outbox)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Analytics outbox delivery failed; pending events will retry")
+            await asyncio.sleep(10)
+    _analytics_worker_task = asyncio.create_task(worker(), name="analytics-outbox")
+
+@app.on_event("shutdown")
+async def stop_analytics_worker() -> None:
+    if _analytics_worker_task:
+        _analytics_worker_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _analytics_worker_task

@@ -160,6 +160,8 @@ def test_refresh_token_uses_user_client(monkeypatch) -> None:
 
 
 def test_verify_magic_link_reconciles_profile_from_revenuecat(monkeypatch) -> None:
+    registration_calls = []
+    monkeypatch.setattr(auth, "record_registration", lambda *args: registration_calls.append(args))
     service_client = _FailingServiceClient()
 
     class _VerifyAuthClient:
@@ -205,12 +207,15 @@ def test_verify_magic_link_reconciles_profile_from_revenuecat(monkeypatch) -> No
         },
     )
 
-    response = client.post("/auth/verify", json={"email": "user@example.com", "token": "123456"})
+    response = client.post("/auth/verify", json={"email": "user@example.com", "token": "123456", "analytics": {"anonymous_id": "demo-anon"}})
 
     assert response.status_code == 200
     assert response.json()["user"]["plan"] == "Pro"
     assert response.json()["user"]["credits"] == 40
 
+
+    assert response.json()["is_new"] is False
+    assert registration_calls == [("user-123", "email", None, {"anonymous_id": "demo-anon"})]
 
 def test_refresh_token_returns_503_for_transient_refresh_failures(monkeypatch) -> None:
     class _TransientAuthClient:
