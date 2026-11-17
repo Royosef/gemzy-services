@@ -149,6 +149,11 @@ def record_generation(job, terminal: bool = False) -> None:
     if not enabled():
         return
     guest = job.user_id.startswith("guest:")
+    if not guest:
+        try:
+            UUID(job.user_id)
+        except ValueError:
+            return
     identity = job.analytics_context.get("anonymous_id") if guest else job.user_id
     if not identity:
         return  # Old guest clients have no linkable analytics identity.

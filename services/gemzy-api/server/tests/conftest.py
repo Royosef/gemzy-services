@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
+
+import pytest
+
+# Never inherit live analytics delivery from a developer's configured .env.
+# Analytics-specific tests opt in explicitly and mock their database/network.
+os.environ["ANALYTICS_ENABLED"] = "false"
+
+
+@pytest.fixture(autouse=True)
+def isolate_analytics(monkeypatch):
+    monkeypatch.setenv("ANALYTICS_ENABLED", "false")
+
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:

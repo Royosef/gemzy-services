@@ -333,6 +333,7 @@ app.add_middleware(LimitUploadSize, max_upload_size=50 * 1024 * 1024)
 @app.get("/")
 async def root() -> dict:
     """Enhanced health check endpoint."""
+    from .analytics import enabled as analytics_enabled
     db_status = "ok"
     try:
         from .supabase_client import get_client
@@ -344,7 +345,12 @@ async def root() -> dict:
 
     return {
         "status": "ok",
-        "database": db_status
+        "database": db_status,
+        "analytics": {
+            "enabled": analytics_enabled(),
+            "delivery_configured": bool(os.getenv("POSTHOG_API_KEY")),
+            "worker_running": _analytics_worker_task is not None and not _analytics_worker_task.done(),
+        },
     }
 
   

@@ -1,5 +1,10 @@
 -- Run before deploying the API. No historical signup events are fabricated.
 BEGIN;
+SET LOCAL lock_timeout = '10s';
+SET LOCAL statement_timeout = '60s';
+-- Keep the historical baseline and trigger installation consistent with
+-- concurrent registrations/sign-ins during this migration.
+LOCK TABLE auth.users IN SHARE ROW EXCLUSIVE MODE;
 CREATE TABLE IF NOT EXISTS public.analytics_outbox (
   id uuid PRIMARY KEY,
   event text NOT NULL,
@@ -90,4 +95,5 @@ REVOKE ALL ON FUNCTION public.on_analytics_auth_success() FROM PUBLIC, anon, aut
 DROP TRIGGER IF EXISTS analytics_auth_success ON auth.users;
 CREATE TRIGGER analytics_auth_success AFTER INSERT OR UPDATE OF last_sign_in_at ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.on_analytics_auth_success();
+NOTIFY pgrst, 'reload schema';
 COMMIT;

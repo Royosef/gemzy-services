@@ -83,6 +83,14 @@ def test_demo_uses_original_anonymous_identity(monkeypatch):
     assert enqueue.call_args.args[0] == "Demo Generation Started"
 
 
+def test_generation_ignores_non_supabase_authenticated_identity(monkeypatch):
+    enqueue = Mock()
+    monkeypatch.setattr(analytics, "enqueue", enqueue)
+    job = GenerationJob(id="test-job", user_id="user-123", total_looks=1)
+    analytics.record_generation(job)
+    enqueue.assert_not_called()
+
+
 def test_delivery_keeps_events_pending_on_network_failure(monkeypatch):
     monkeypatch.setenv("POSTHOG_API_KEY", "test-key")
     query = Mock()
