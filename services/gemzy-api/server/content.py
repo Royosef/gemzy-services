@@ -8,6 +8,7 @@ import mimetypes
 import os
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
+from pydantic import BaseModel
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -1951,6 +1952,51 @@ def generate_item_signed_url(
     ).isoformat() + "Z"
 
     return SignedUrlResponse(url=url, previewUrl=preview_url, expiresAt=expires_at)
+
+
+class CollectionStats(BaseModel):
+    """Aggregate counts for the web Home dashboard."""
+
+    campaigns: int
+    images: int
+    videos: int
+
+
+_VIDEO_ITEM_FILTER = ",".join(
+    [
+        "metadata->>mediaType.eq.video",
+        "metadata->>media_type.eq.video",
+        "metadata->>contentType.ilike.video/*",
+        *(f"external_id.ilike.*{ext}" for ext in (".mp4", ".mov", ".m4v", ".webm")),
+    ]
+)
+
+
+def _exact_count(query: Any) -> int:
+    result = query.execute()
+    return int(getattr(result, "count", None) or 0)
+
+
+@collections_router.get("/stats", response_model=CollectionStats)
+def get_collection_stats(user: UserState = Depends(get_current_user)) -> CollectionStats:
+    """Counts of campaigns, generated images and videos for the current user.
+
+    Uses count-only (HEAD) queries so no rows are transferred.
+    """
+    sb = get_client()
+    campaigns = _exact_count(
+        sb.table("collections").select("id", count="exact", head=True).eq("user_id", user.id)
+    )
+    total_items = _exact_count(
+        sb.table("collection_items").select("id", count="exact", head=True).eq("user_id", user.id)
+    )
+    videos = _exact_count(
+        sb.table("collection_items")
+        .select("id", count="exact", head=True)
+        .eq("user_id", user.id)
+        .or_(_VIDEO_ITEM_FILTER)
+    )
+    return CollectionStats(campaigns=campaigns, images=max(0, total_items - videos), videos=videos)
 
 
 @collections_router.get("/", response_model=list[Collection])
