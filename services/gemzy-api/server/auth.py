@@ -17,6 +17,7 @@ import base64, json
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     HTTPException,
@@ -51,6 +52,7 @@ from .schemas import (
     UserState,
     VerifyRequest,
 )
+from . import web_session
 from .credits import schedule_next_credit_reset
 from .plans import get_plan_initial_credits, normalize_plan
 from .storage import build_public_url, get_bucket, user_storage_prefix
@@ -575,7 +577,7 @@ def send_magic_link(request: Request, data: MagicLinkRequest) -> dict:
 
 @router.post("/verify", response_model=AuthResponse)
 @limiter.limit(LIMIT_auth_verify)
-def verify_magic_link(request: Request, data: VerifyRequest) -> AuthResponse:
+def verify_magic_link(request: Request, response: Response, data: VerifyRequest) -> AuthResponse:
     """Verify an emailed one-time code and return tokens/profile."""
 
     otp_client = create_user_client()
@@ -627,7 +629,11 @@ def verify_magic_link(request: Request, data: VerifyRequest) -> AuthResponse:
     profile = _ensure_monthly_credits(res.user.id, profile.get("plan"), profile)
     record_registration(res.user.id, "email", _auth_user_created_at(res.user), data.analytics)
     return AuthResponse(
-        token=Token(access=res.session.access_token, refresh=res.session.refresh_token),
+        token=web_session.issue(
+            request,
+            response,
+            Token(access=res.session.access_token, refresh=res.session.refresh_token),
+        ),
         user=_build_user_state(
             res.user.id,
             profile,
@@ -640,11 +646,24 @@ def verify_magic_link(request: Request, data: VerifyRequest) -> AuthResponse:
 
 
 @router.post("/refresh", response_model=Token)
-def refresh_token(data: RefreshRequest) -> Token:
-    """Exchange a refresh token for new access and refresh tokens."""
+def refresh_token(
+    request: Request,
+    response: Response,
+    data: Optional[RefreshRequest] = Body(default=None),
+) -> Token:
+    """Exchange a refresh token for new access and refresh tokens.
+
+    Native clients send the refresh token in the body. Web-session clients send
+    no body; the token is read from the HttpOnly cookie (see ``web_session``).
+    """
+    refresh_value = (data.refresh if data else None) or web_session.read_refresh(request)
+    if not refresh_value:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token"
+        )
     sb = create_user_client()
     try:
-        res = sb.auth.refresh_session(data.refresh)
+        res = sb.auth.refresh_session(refresh_value)
     except Exception as exc:  # pragma: no cover - network failure
         status_code = (
             status.HTTP_401_UNAUTHORIZED
@@ -660,7 +679,19 @@ def refresh_token(data: RefreshRequest) -> Token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
-    return Token(access=res.session.access_token, refresh=res.session.refresh_token)
+    return web_session.issue(
+        request,
+        response,
+        Token(access=res.session.access_token, refresh=res.session.refresh_token),
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout() -> Response:
+    """Clear the web-session refresh cookie. No-op for native clients."""
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    web_session.clear(response)
+    return response
 
 
 @oauth_router.get("/{provider}")
@@ -759,7 +790,7 @@ async def exchange_google_code(auth_code: str, redirect_uri: str | None = None) 
 
 @router.post("/oauth", response_model=AuthResponse)
 @limiter.limit(LIMIT_oauth_login)
-async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
+async def oauth_login(request: Request, response: Response, data: OAuthRequest) -> AuthResponse:
     sb = create_user_client()
     started_at = time.perf_counter()
 
@@ -912,7 +943,11 @@ async def oauth_login(request: Request, data: OAuthRequest) -> AuthResponse:
     
     record_registration(res.user.id, data.provider, _auth_user_created_at(res.user), data.analytics)
     return AuthResponse(
-        token=Token(access=res.session.access_token, refresh=res.session.refresh_token),
+        token=web_session.issue(
+            request,
+            response,
+            Token(access=res.session.access_token, refresh=res.session.refresh_token),
+        ),
         user=loggedUser,
         is_new=is_new,
     )
