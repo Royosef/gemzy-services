@@ -521,6 +521,8 @@ class CreateMotionGenerationPayload(BaseModel):
     returnLastFrame: bool = False
     videoCount: int = Field(default=1, ge=1, le=4)
     creditsNeeded: int | None = Field(default=None, ge=0)
+    # Campaign to save the videos in; omitted (older apps) keeps the "unsaved" collection.
+    collectionId: str | None = None
 
 
 class ImageEditFeedbackRequest(BaseModel):

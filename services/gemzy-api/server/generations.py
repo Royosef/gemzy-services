@@ -2504,6 +2504,9 @@ async def create_motion_generation(
 
     # Reject foreign image URLs before any credits are reserved.
     _validate_motion_frame_url(payload.firstFrameUrl)
+    target_collection_id = (payload.collectionId or "").strip() or None
+    if target_collection_id:
+        _ensure_collections_belong(user.id, [target_collection_id])
 
     credit_cost_per_video = MOTION_CREDITS_PER_VIDEO[payload.duration]
     required_credits = _motion_credit_cost(payload.duration, payload.videoCount)
@@ -2535,6 +2538,7 @@ async def create_motion_generation(
         job_type="motion",
         reserved_credit_cost=required_credits,
         credit_cost_per_look=credit_cost_per_video,
+        unsaved_collection_id=target_collection_id,
     )
 
     _schedule_motion_generation_job(
