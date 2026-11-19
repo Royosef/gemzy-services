@@ -931,13 +931,23 @@ def _refund_cancelled_reserved_looks(job: GenerationJob, looks: int = 1) -> int 
         return remaining
 
 
+def _generation_server_override_allowed() -> bool:
+    """Client-supplied generation targets are for local development only."""
+
+    return os.getenv("ALLOW_GENERATION_SERVER_OVERRIDE", "").strip().lower() in {"1", "true", "yes"}
+
+
 def _resolve_generation_url(override: str | None) -> str:
     """Return the target generation endpoint."""
 
     configured_base = os.getenv("GENERATION_SERVER_URL", "").strip()
-    candidate = override.strip() if override else configured_base
-    if not candidate:
-        candidate = (override or "").strip()
+    requested = (override or "").strip()
+    if requested and not _generation_server_override_allowed():
+        # Only development builds send this, and the request carries X-Generation-Secret, so a
+        # client-chosen target would leak the secret. Use the configured server instead.
+        logger.warning("Ignoring client generationServerUrl override")
+        requested = ""
+    candidate = requested or configured_base
 
     if not candidate:
         raise HTTPException(
@@ -2556,6 +2566,43 @@ async def create_motion_generation(
     return CreateGenerationResponse(**job_state)
 
 
+def _model_plan_from_db(model_id: str) -> str | None:
+    """The plan a catalogue model requires, or None if the id isn't a catalogue model."""
+
+    try:
+        UUID(model_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        rows = (
+            get_client().table("models").select("plan").eq("id", model_id).limit(1).execute()
+        ).data or []
+    except APIError:
+        logger.warning("Model plan lookup failed for %s", model_id, exc_info=True)
+        return None
+    plan = rows[0].get("plan") if rows else None
+    return plan if isinstance(plan, str) and plan.strip() else None
+
+
+def _required_model_tier(payload: CreateGenerationPayload, tier_levels: dict[str, int]) -> str:
+    """Plan required for the selected model, taken from the catalogue rather than the client.
+
+    The stricter of the stored plan and the client's value wins, so an honest client never sees
+    a change. Ids outside the catalogue (e.g. the Pure Jewelry placeholder) keep the client value.
+    """
+
+    from .plans import normalize_plan
+
+    client_tier = normalize_plan(payload.model.planTier)
+    stored = _model_plan_from_db(payload.model.id)
+    if stored is None:
+        return client_tier
+    stored_tier = normalize_plan(stored)
+    if tier_levels.get(stored_tier, 0) >= tier_levels.get(client_tier, 0):
+        return stored_tier
+    return client_tier
+
+
 @router.post("/", response_model=CreateGenerationResponse)
 @limiter.limit(LIMIT_generation_create)
 async def create_generation(
@@ -2591,7 +2638,7 @@ async def create_generation(
     from .plans import normalize_plan
 
     user_tier = normalize_plan(user.plan)
-    required_tier = normalize_plan(payload.model.planTier)
+    required_tier = _required_model_tier(payload, tier_levels)
 
     if (
         not is_guest_generation

@@ -14,6 +14,9 @@ except ImportError:  # pragma: no cover - fallback when email-validator is missi
     EmailStr = str  # type: ignore[misc, assignment]
 
 
+MAX_GENERATION_LOOKS = 8
+
+
 class MagicLinkRequest(BaseModel):
     """Request payload to send a magic link."""
     email: EmailStr
@@ -436,7 +439,8 @@ class CreateGenerationPayload(BaseModel):
     mode: Literal["SIMPLE", "ADVANCED"]
     aspect: GenerationAspect
     dims: GenerationDimensions
-    looks: int
+    # Apps offer 1, 2, 4, 6 or 8; 0 or negative values would make the job free or add credits.
+    looks: int = Field(ge=1, le=MAX_GENERATION_LOOKS)
     quality: GenerationQuality
     plan: str
     creditsNeeded: int

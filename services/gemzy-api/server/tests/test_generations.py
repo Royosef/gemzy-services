@@ -487,6 +487,7 @@ def test_generation_request_forwards_payload(monkeypatch: pytest.MonkeyPatch, cl
     """The route should forward the payload to the resolved generation server."""
 
     monkeypatch.setenv("GENERATION_SERVER_URL", "https://default.example")
+    monkeypatch.setenv("ALLOW_GENERATION_SERVER_OVERRIDE", "true")  # dev-only override
     monkeypatch.setenv("GENERATION_SERVER_ENDPOINT", "/submit")
     monkeypatch.setenv("GENERATION_CALLBACK_URL", "https://app.example")
     monkeypatch.setenv("GENERATION_SHARED_SECRET", "secret")
