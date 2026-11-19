@@ -7,7 +7,8 @@ import logging
 import mimetypes
 import os
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
+from pydantic import BaseModel
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -1785,6 +1786,82 @@ def _remove_from_unsaved_collection(
 # ------------------------------------------------------------------------------
 
 
+_ITEM_COLUMNS = (
+    "collection_id,external_id,id,image_url,category,"
+    "is_new,is_favorite,metadata,created_at,model_id,model_name"
+)
+
+
+def _parse_items_cursor(cursor: str | None) -> str | None:
+    """Return the created_at bound from a "<created_at_iso>|<id>" cursor."""
+    if not cursor:
+        return None
+    try:
+        created_at_str, _cursor_id = cursor.split("|", 1)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor")
+    return created_at_str
+
+
+def _build_items_page(
+    rows: list[dict[str, Any]], limit: int, *, include_signed: bool
+) -> CollectionItemsPage:
+    """Map collection_items rows (fetched with limit + 1) into a keyset page."""
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+
+    items: list[CollectionImage] = []
+    next_cursor: str | None = None
+
+    for row in page_rows:
+        raw_external_id = row.get("external_id")
+        # Normalized storage path for client usage and signing
+        storage_path = _select_collection_storage_path(
+            _coerce_str(raw_external_id),
+            _coerce_str(row.get("image_url")),
+        )
+
+        preview_uri, resolved_uri = _resolve_collection_image_variants(
+            row.get("image_url"),
+            storage_path,
+            include_signed=include_signed,
+            metadata=row.get("metadata"),
+        )
+
+        model_id = _coerce_str(row.get("model_id"))
+        model_name = _coerce_str(row.get("model_name"))
+
+        items.append(
+            CollectionImage(
+                id=raw_external_id or row.get("id"),
+                collectionId=row.get("collection_id"),
+                uri=preview_uri or resolved_uri or "",
+                previewUri=preview_uri,
+                fullUri=resolved_uri,
+                category=row.get("category"),
+                isNew=bool(row.get("is_new")),
+                isFavorite=bool(row.get("is_favorite")),
+                metadata=row.get("metadata"),
+                **_collection_item_media_fields(row.get("metadata")),
+                modelId=model_id,
+                modelName=model_name,
+                storagePath=storage_path,
+            )
+        )
+
+    if has_more and page_rows:
+        last = page_rows[-1]
+        created_at = last.get("created_at")
+        if isinstance(created_at, datetime):
+            created_str = created_at.replace(microsecond=0).isoformat() + "Z"
+        else:
+            created_str = str(created_at)
+        last_id = _coerce_str(last.get("id") or last.get("external_id")) or ""
+        next_cursor = f"{created_str}|{last_id}"
+
+    return CollectionItemsPage(items=items, nextCursor=next_cursor)
+
+
 @collections_router.get(
     "/{collection_id}/items",
     response_model=CollectionItemsPage,
@@ -1832,59 +1909,7 @@ def list_collection_items(
     # Fetch one extra row to know if there's a next page
     rows = (query.limit(limit + 1).execute().data) or []
 
-    has_more = len(rows) > limit
-    page_rows = rows[:limit]
-
-    items: list[CollectionImage] = []
-    next_cursor: str | None = None
-
-    for row in page_rows:
-        raw_external_id = row.get("external_id")
-        # Normalized storage path for client usage and signing
-        storage_path = _select_collection_storage_path(
-            _coerce_str(raw_external_id),
-            _coerce_str(row.get("image_url")),
-        )
-
-        preview_uri, resolved_uri = _resolve_collection_image_variants(
-            row.get("image_url"),
-            storage_path,
-            include_signed=includeSigned,
-            metadata=row.get("metadata"),
-        )
-
-        model_id = _coerce_str(row.get("model_id"))
-        model_name = _coerce_str(row.get("model_name"))
-
-        items.append(
-            CollectionImage(
-                id=raw_external_id or row.get("id"),
-                collectionId=collection_id,
-                uri=preview_uri or resolved_uri or "",
-                previewUri=preview_uri,
-                fullUri=resolved_uri,
-                category=row.get("category"),
-                isNew=bool(row.get("is_new")),
-                isFavorite=bool(row.get("is_favorite")),
-                metadata=row.get("metadata"),
-                **_collection_item_media_fields(row.get("metadata")),
-                modelId=model_id,
-                modelName=model_name,
-                storagePath=storage_path,
-            )
-        )
-
-    if has_more and page_rows:
-        last = page_rows[-1]
-        created_at = last.get("created_at")
-        if isinstance(created_at, datetime):
-            created_str = created_at.replace(microsecond=0).isoformat() + "Z"
-        else:
-            created_str = str(created_at)
-        last_id = _coerce_str(last.get("id") or last.get("external_id")) or ""
-        next_cursor = f"{created_str}|{last_id}"
-
-    return CollectionItemsPage(items=items, nextCursor=next_cursor)
+    return _build_items_page(rows, limit, include_signed=includeSigned)
 
 
 @collections_router.get(
@@ -1951,6 +1976,112 @@ def generate_item_signed_url(
     ).isoformat() + "Z"
 
     return SignedUrlResponse(url=url, previewUrl=preview_url, expiresAt=expires_at)
+
+
+class CollectionStats(BaseModel):
+    """Aggregate counts for the web Home dashboard."""
+
+    campaigns: int
+    images: int
+    videos: int
+
+
+_VIDEO_ITEM_FILTER = ",".join(
+    [
+        "metadata->>mediaType.eq.video",
+        "metadata->>media_type.eq.video",
+        "metadata->>contentType.ilike.video/*",
+        *(f"external_id.ilike.*{ext}" for ext in (".mp4", ".mov", ".m4v", ".webm")),
+    ]
+)
+
+
+def _exact_count(query: Any) -> int:
+    result = query.execute()
+    return int(getattr(result, "count", None) or 0)
+
+
+@collections_router.get("/stats", response_model=CollectionStats)
+def get_collection_stats(user: UserState = Depends(get_current_user)) -> CollectionStats:
+    """Counts of campaigns, generated images and videos for the current user.
+
+    Uses count-only (HEAD) queries so no rows are transferred.
+    """
+    sb = get_client()
+    campaigns = _exact_count(
+        sb.table("collections").select("id", count="exact", head=True).eq("user_id", user.id)
+    )
+    total_items = _exact_count(
+        sb.table("collection_items").select("id", count="exact", head=True).eq("user_id", user.id)
+    )
+    videos = _exact_count(
+        sb.table("collection_items")
+        .select("id", count="exact", head=True)
+        .eq("user_id", user.id)
+        .or_(_VIDEO_ITEM_FILTER)
+    )
+    return CollectionStats(campaigns=campaigns, images=max(0, total_items - videos), videos=videos)
+
+
+_ITEMS_IMAGE_SCAN_BATCHES = 5
+
+
+@collections_router.get("/items", response_model=CollectionItemsPage)
+def list_all_collection_items(
+    mediaType: Literal["image", "video"] | None = None,
+    limit: int = Query(30, ge=1, le=100),
+    cursor: str | None = None,
+    user: UserState = Depends(get_current_user),
+) -> CollectionItemsPage:
+    """Paginated items across all of the user's campaigns (newest first).
+
+    Videos are filtered in the query. Images are everything that is not a video;
+    PostgREST can't negate the video OR-group reliably (NULL metadata), so image
+    pages are filled by scanning a bounded number of batches.
+    """
+    sb = get_client()
+    before = _parse_items_cursor(cursor)
+
+    def base_query(bound: str | None):
+        query = (
+            sb.table("collection_items")
+            .select(_ITEM_COLUMNS)
+            .eq("user_id", user.id)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+        )
+        if mediaType == "video":
+            query = query.or_(_VIDEO_ITEM_FILTER)
+        if bound:
+            query = query.lt("created_at", bound)
+        return query
+
+    if mediaType != "image":
+        rows = base_query(before).limit(limit + 1).execute().data or []
+        return _build_items_page(rows, limit, include_signed=True)
+
+    collected: list[dict[str, Any]] = []
+    bound = before
+    more_rows = False
+    for _ in range(_ITEMS_IMAGE_SCAN_BATCHES):
+        batch = base_query(bound).limit(limit + 1).execute().data or []
+        collected.extend(row for row in batch if not _is_video_item_row(row))
+        more_rows = len(batch) > limit
+        if len(collected) > limit or not more_rows:
+            break
+        bound = str(batch[-1].get("created_at"))
+    page = _build_items_page(collected, limit, include_signed=True)
+    if page.nextCursor is None and more_rows and bound:
+        # Scan cap reached on a video-heavy stretch: let the client continue from here.
+        page.nextCursor = f"{bound}|"
+    return page
+
+
+def _is_video_item_row(row: Mapping[str, Any]) -> bool:
+    if _collection_item_media_fields(row.get("metadata")).get("mediaType") == "video":
+        return True
+    path = (_coerce_str(row.get("external_id")) or "").lower()
+    return path.endswith((".mp4", ".mov", ".m4v", ".webm"))
 
 
 @collections_router.get("/", response_model=list[Collection])

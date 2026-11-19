@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
@@ -13,6 +13,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server import auth, payments
+
+
+def _native_request() -> SimpleNamespace:
+    """A request without web-session headers (behaves like the mobile app)."""
+    return SimpleNamespace(headers={}, cookies={})
 
 
 class _FailingServiceAuth:
@@ -152,7 +157,7 @@ def test_refresh_token_uses_user_client(monkeypatch) -> None:
     monkeypatch.setattr(auth, "get_client", lambda: service_client)
     monkeypatch.setattr(auth, "create_user_client", lambda: user_client)
 
-    token = auth.refresh_token(auth.RefreshRequest(refresh="refresh-me"))
+    token = auth.refresh_token(_native_request(), Response(), auth.RefreshRequest(refresh="refresh-me"))
 
     assert token.access == "access-token"
     assert token.refresh == "refresh-token"
@@ -227,7 +232,7 @@ def test_refresh_token_returns_503_for_transient_refresh_failures(monkeypatch) -
     monkeypatch.setattr(auth, "create_user_client", lambda: transient_client)
 
     try:
-        auth.refresh_token(auth.RefreshRequest(refresh="refresh-me"))
+        auth.refresh_token(_native_request(), Response(), auth.RefreshRequest(refresh="refresh-me"))
     except auth.HTTPException as exc:
         assert exc.status_code == 503
         assert exc.detail == "Unable to refresh session right now"
@@ -245,7 +250,7 @@ def test_refresh_token_returns_401_for_invalid_refresh_failures(monkeypatch) -> 
     monkeypatch.setattr(auth, "create_user_client", lambda: invalid_client)
 
     try:
-        auth.refresh_token(auth.RefreshRequest(refresh="refresh-me"))
+        auth.refresh_token(_native_request(), Response(), auth.RefreshRequest(refresh="refresh-me"))
     except auth.HTTPException as exc:
         assert exc.status_code == 401
         assert exc.detail == "Invalid Refresh Token: Already Used"
