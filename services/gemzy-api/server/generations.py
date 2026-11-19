@@ -45,6 +45,7 @@ from .generation_state import (
     create_job,
     delete_job,
     get_job,
+    list_jobs_for_user,
     mark_completed,
     mark_failed,
     mark_started,
@@ -56,6 +57,8 @@ from .schemas import (
     CancelGenerationPayload,
     CreateGenerationPayload,
     CreateGenerationResponse,
+    GenerationJobListResponse,
+    GenerationJobSummary,
     CreateImageEditPayload,
     CreateMotionGenerationPayload,
     GenerationModelPayload,
@@ -2721,6 +2724,39 @@ def _require_secret(request: Request) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid generation signature",
         )
+
+
+JOB_LIST_WINDOW = timedelta(days=7)
+JOB_LIST_LIMIT = 60
+
+
+def _iso(value: datetime) -> str:
+    return value.isoformat() + "Z"
+
+
+@router.get("/jobs", response_model=GenerationJobListResponse)
+def list_generation_jobs(
+    user: UserState = Depends(get_current_user),
+) -> GenerationJobListResponse:
+    """The signed-in user's recent generation jobs, from any device (newest first)."""
+
+    jobs = list_jobs_for_user(
+        user.id, since=datetime.utcnow() - JOB_LIST_WINDOW, limit=JOB_LIST_LIMIT
+    )
+    summaries = []
+    for job in jobs:
+        state = to_response(job)
+        state.update(
+            jobType=job.job_type,
+            taskType=(job.style or {}).get("task_type") or None,
+            collectionId=job.unsaved_collection_id,
+            modelName=job.model_name,
+            creditCostPerLook=job.credit_cost_per_look or None,
+            createdAt=_iso(job.created_at),
+            updatedAt=_iso(job.updated_at),
+        )
+        summaries.append(GenerationJobSummary(**state))
+    return GenerationJobListResponse(jobs=summaries)
 
 
 @router.get("/{job_id}", response_model=CreateGenerationResponse)
