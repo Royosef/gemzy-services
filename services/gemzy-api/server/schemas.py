@@ -562,6 +562,21 @@ class CreateGenerationResponse(BaseModel):
     editModeTrialEditsRemaining: int | None = Field(default=None, ge=0, le=2)
 
 
+
+class GenerationJobSummary(CreateGenerationResponse):
+    """A job in the signed-in user's job list (GET /generations/jobs)."""
+
+    taskType: str | None = None
+    collectionId: str | None = None
+    modelName: str | None = None
+    creditCostPerLook: int | None = Field(default=None, ge=0)
+    createdAt: str
+    updatedAt: str
+
+
+class GenerationJobListResponse(BaseModel):
+    jobs: list[GenerationJobSummary] = Field(default_factory=list)
+
 class CancelGenerationPayload(BaseModel):
     """User-requested cancellation for queued generation slots."""
 

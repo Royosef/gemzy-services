@@ -140,6 +140,19 @@ def get_job(job_id: str) -> Optional[GenerationJob]:
         return _JOBS.get(job_id)
 
 
+
+def list_jobs_for_user(user_id: str, *, since: datetime, limit: int) -> List[GenerationJob]:
+    """The user's jobs created after ``since``, newest first.
+
+    Jobs live in this process's memory, so this only covers jobs since the last restart and on
+    this instance (the API runs as a single instance).
+    """
+
+    with _LOCK:
+        jobs = [job for job in _JOBS.values() if job.user_id == user_id and job.created_at >= since]
+    jobs.sort(key=lambda job: job.created_at, reverse=True)
+    return jobs[:limit]
+
 def delete_job(job_id: str) -> bool:
     with _LOCK:
         return _JOBS.pop(job_id, None) is not None
