@@ -11,7 +11,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from uuid import uuid4
 import base64, json
 
@@ -788,6 +788,24 @@ async def exchange_google_code(auth_code: str, redirect_uri: str | None = None) 
 
     return r.json()
 
+
+def _sign_in_with_id_token(sb, credentials: dict) -> Any:
+    """Supabase ID-token sign-in; a rejected token is a client error (401), not a 500."""
+
+    try:
+        return sb.auth.sign_in_with_id_token(credentials)
+    except AuthApiError as exc:
+        logger.warning(
+            "oauth_login %s sign_in_with_id_token rejected: %s",
+            credentials.get("provider"),
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign-in was rejected. Please try again.",
+        ) from exc
+
+
 @router.post("/oauth", response_model=AuthResponse)
 @limiter.limit(LIMIT_oauth_login)
 async def oauth_login(request: Request, response: Response, data: OAuthRequest) -> AuthResponse:
@@ -816,7 +834,7 @@ async def oauth_login(request: Request, response: Response, data: OAuthRequest) 
         payload["nonce"] = data.nonce
         raw_id_token = data.token
         sign_in_started = time.perf_counter()
-        res = sb.auth.sign_in_with_id_token(payload)
+        res = _sign_in_with_id_token(sb, payload)
         logger.info(
             "oauth_login apple sign_in_with_id_token completed in %.3fs",
             time.perf_counter() - sign_in_started,
@@ -837,7 +855,7 @@ async def oauth_login(request: Request, response: Response, data: OAuthRequest) 
             if data.nonce:
                 payload["nonce"] = data.nonce
             sign_in_started = time.perf_counter()
-            res = sb.auth.sign_in_with_id_token(payload)
+            res = _sign_in_with_id_token(sb, payload)
             logger.info(
                 "oauth_login google sign_in_with_id_token completed in %.3fs",
                 time.perf_counter() - sign_in_started,
@@ -856,7 +874,8 @@ async def oauth_login(request: Request, response: Response, data: OAuthRequest) 
 
             raw_id_token = id_token
             sign_in_started = time.perf_counter()
-            res = sb.auth.sign_in_with_id_token(
+            res = _sign_in_with_id_token(
+                sb,
                 {"provider": "google", "token": id_token, "access_token": access_token}
             )
             logger.info(

@@ -1843,6 +1843,7 @@ def test_motion_generation_demo_video_uploads_to_storage_and_db(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The motion route should queue quickly and eventually store the demo MP4."""
+    monkeypatch.setenv("MOTION_FRAME_ALLOWED_HOSTS", "cdn.example")
 
     inserted_payloads: list[dict[str, Any]] = []
     uploaded: list[dict[str, Any]] = []
@@ -2009,6 +2010,7 @@ def test_motion_generation_returns_immediately_with_queued_job(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
 ) -> None:
+    monkeypatch.setenv("MOTION_FRAME_ALLOWED_HOSTS", "cdn.example")
     scheduled: list[dict[str, Any]] = []
 
     monkeypatch.setattr(
