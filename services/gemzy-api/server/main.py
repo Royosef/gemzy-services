@@ -29,6 +29,7 @@ from . import (
     dashboard_social_sources,
     dashboard_webhooks,
     generations,
+    inspirations,
     looks,
     notifications,
     payments,
@@ -132,6 +133,7 @@ app.include_router(content.collections_router)
 app.include_router(content.models_router)
 # Generation endpoints
 app.include_router(generations.router)
+app.include_router(inspirations.router)
 app.include_router(looks.router)
 app.include_router(looks.creation_look_presets_router)
 app.include_router(payments.router)

@@ -131,3 +131,60 @@ def test_invalid_cursor_is_rejected(monkeypatch) -> None:
     client, _ = _client(monkeypatch, [])
     res = client.get("/collections/items", params={"cursor": "garbage"})
     assert res.status_code == 400
+
+
+class _FavoriteQuery(_Query):
+    """Understands the favourite OR-group: is_favorite or collection_id in (...)."""
+
+    def execute(self):
+        self.log.append(list(self.filters))
+        rows = list(self.rows)
+        for kind, *args in self.filters:
+            if kind == "or" and args[0].startswith("is_favorite"):
+                liked = set()
+                if "collection_id.in.(" in args[0]:
+                    liked = set(args[0].split("collection_id.in.(", 1)[1].rstrip(")").split(","))
+                rows = [r for r in rows if r["is_favorite"] or r["collection_id"] in liked]
+            elif kind == "or":
+                rows = [r for r in rows if r["metadata"].get("mediaType") == "video"]
+            elif kind == "lt":
+                rows = [r for r in rows if r["created_at"] < args[1]]
+        rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return SimpleNamespace(data=rows[: self._limit])
+
+
+def _favorite_client(monkeypatch, rows, liked_collections):
+    log: list = []
+    collections = [{"id": cid} for cid in liked_collections]
+
+    def table(name):
+        return _FavoriteQuery(collections if name == "collections" else rows, log)
+
+    monkeypatch.setattr(content, "get_client", lambda: SimpleNamespace(table=table))
+    monkeypatch.setattr(content, "_fetch_model_records", lambda _ids: {}, raising=False)
+    app = FastAPI()
+    app.include_router(content.collections_router)
+    app.dependency_overrides[get_current_user] = lambda: UserState(id="user-1")
+    return TestClient(app), log
+
+
+def test_favorite_feed_has_flagged_items_and_liked_campaigns(monkeypatch) -> None:
+    rows = [_row(i, video=i == 4) for i in range(6)]  # col-0: 0,2,4  col-1: 1,3,5
+    rows[3]["is_favorite"] = True
+    client, log = _favorite_client(monkeypatch, rows, ["col-0"])
+
+    images = client.get("/collections/items", params={"favorite": "true", "mediaType": "image"})
+    videos = client.get("/collections/items", params={"favorite": "true", "mediaType": "video"})
+
+    assert [i["id"] for i in images.json()["items"]] == [rows[n]["external_id"] for n in (0, 2, 3)]
+    assert [i["id"] for i in videos.json()["items"]] == [rows[4]["external_id"]]
+    # Never two OR-groups in one query.
+    assert all(sum(1 for f in filters if f[0] == "or") <= 1 for filters in log)
+
+
+def test_favorite_feed_without_liked_campaigns(monkeypatch) -> None:
+    rows = [_row(i) for i in range(3)]
+    rows[1]["is_favorite"] = True
+    client, _ = _favorite_client(monkeypatch, rows, [])
+    body = client.get("/collections/items", params={"favorite": "true"}).json()
+    assert [i["id"] for i in body["items"]] == [rows[1]["external_id"]]
