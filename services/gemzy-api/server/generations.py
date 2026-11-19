@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from PIL import Image
@@ -1582,7 +1583,7 @@ async def _forward_generation_request(
 
 
 
-from .rate_limit import limiter, LIMIT_generation_create
+from .rate_limit import client_ip, limiter, LIMIT_generation_create
 
 COST_PER_LOOK = {
     "1080p": 4,
@@ -1640,7 +1641,7 @@ def _is_guest_generation_retry(payload: CreateGenerationPayload) -> bool:
 
 
 def _guest_request_key(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return client_ip(request) or "unknown"
 
 
 def _check_guest_generation_quota(request: Request) -> None:
@@ -1757,14 +1758,48 @@ def _build_guest_user(job_id: str) -> UserState:
     )
 
 
+def _motion_frame_allowed_hosts() -> tuple[set[str], set[str]]:
+    """Return (hosts allowed outright, GCS bucket names allowed on storage.googleapis.com)."""
+
+    buckets = {
+        name.strip().lower()
+        for name in (
+            os.getenv("GCS_COLLECTIONS_PUBLIC_BUCKET"),
+            os.getenv("GCS_COLLECTIONS_APP_BUCKET"),
+        )
+        if name and name.strip()
+    }
+    hosts = {f"{bucket}.storage.googleapis.com" for bucket in buckets}
+    public_host = (os.getenv("GCS_PUBLIC_HOST") or "").strip()
+    if public_host:
+        hosts.add((urlsplit(public_host).hostname or public_host).lower())
+    extra = os.getenv("MOTION_FRAME_ALLOWED_HOSTS", "")
+    hosts.update(host.strip().lower() for host in extra.split(",") if host.strip())
+    return hosts, buckets
+
+
 def _validate_motion_frame_url(value: str) -> str:
+    """Only forward images from Gemzy storage to the video provider (no arbitrary URLs)."""
+
     frame_url = value.strip()
     if not frame_url.startswith(("http://", "https://")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Motion generation requires an HTTP image URL.",
         )
-    return frame_url
+    parsed = urlsplit(frame_url)
+    host = (parsed.hostname or "").lower()
+    hosts, buckets = _motion_frame_allowed_hosts()
+    if not hosts and not buckets:
+        # Storage isn't configured (local development): nothing to compare against.
+        return frame_url
+    bucket = parsed.path.lstrip("/").split("/", 1)[0].lower()
+    if host in hosts or (host == "storage.googleapis.com" and bucket in buckets):
+        return frame_url
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Motion generation only accepts images stored in Gemzy.",
+    )
 
 
 def _extract_motion_json_url(data: Any) -> str | None:
@@ -2466,6 +2501,9 @@ async def create_motion_generation(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"This model requires the {required_tier} plan.",
         )
+
+    # Reject foreign image URLs before any credits are reserved.
+    _validate_motion_frame_url(payload.firstFrameUrl)
 
     credit_cost_per_video = MOTION_CREDITS_PER_VIDEO[payload.duration]
     required_credits = _motion_credit_cost(payload.duration, payload.videoCount)
