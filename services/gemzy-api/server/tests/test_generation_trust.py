@@ -70,21 +70,45 @@ def _model_payload(model_id: str, client_tier: str):
     return SimpleNamespace(model=SimpleNamespace(id=model_id, planTier=client_tier))
 
 
-def test_catalogue_plan_overrides_a_lower_client_plan(monkeypatch):
-    monkeypatch.setattr(generations, "_model_plan_from_db", lambda _id: "Pro")
-    assert generations._required_model_tier(_model_payload(MODEL_ID, "Free"), TIERS) == "Pro"
+def test_catalogue_plan_overrides_a_lower_client_plan():
+    payload = _model_payload(MODEL_ID, "Free")
+    assert generations._required_model_tier(payload, TIERS, {"plan": "Pro"}) == "Pro"
 
 
-def test_higher_client_plan_is_kept(monkeypatch):
-    monkeypatch.setattr(generations, "_model_plan_from_db", lambda _id: "Free")
-    assert generations._required_model_tier(_model_payload(MODEL_ID, "Pro"), TIERS) == "Pro"
+def test_higher_client_plan_is_kept():
+    payload = _model_payload(MODEL_ID, "Pro")
+    assert generations._required_model_tier(payload, TIERS, {"plan": "Free"}) == "Pro"
 
 
-def test_non_catalogue_model_keeps_client_plan(monkeypatch):
-    monkeypatch.setattr(generations, "_model_plan_from_db", lambda _id: None)
+def test_non_catalogue_model_keeps_client_plan():
     payload = _model_payload("pure-jewelry-model", "Free")
-    assert generations._required_model_tier(payload, TIERS) == "Free"
+    assert generations._required_model_tier(payload, TIERS, None) == "Free"
 
 
 def test_non_uuid_ids_skip_the_lookup():
-    assert generations._model_plan_from_db("pure-jewelry-model") is None
+    assert generations._catalogue_model("pure-jewelry-model") is None
+
+
+def test_catalogue_photo_replaces_the_client_photo():
+    payload = CreateGenerationPayload(
+        **_payload(
+            model={
+                "id": MODEL_ID,
+                "slug": "m",
+                "name": "M",
+                "planTier": "Free",
+                "imageUri": "https://evil.example/pro-model.png",
+                "imageBase64": "aGVsbG8=",
+            }
+        )
+    )
+    out = generations._with_catalogue_model_image(
+        payload, {"plan": "Free", "image_url": "https://storage.googleapis.com/b/m.png"}
+    )
+    assert out.model.imageUri == "https://storage.googleapis.com/b/m.png"
+    assert out.model.imageBase64 is None
+
+
+def test_non_catalogue_model_photo_is_untouched():
+    payload = CreateGenerationPayload(**_payload())
+    assert generations._with_catalogue_model_image(payload, None) is payload

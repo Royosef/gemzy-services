@@ -2566,8 +2566,8 @@ async def create_motion_generation(
     return CreateGenerationResponse(**job_state)
 
 
-def _model_plan_from_db(model_id: str) -> str | None:
-    """The plan a catalogue model requires, or None if the id isn't a catalogue model."""
+def _catalogue_model(model_id: str) -> dict[str, Any] | None:
+    """The stored catalogue row (plan, image_url) for a model id, or None if it isn't one."""
 
     try:
         UUID(model_id)
@@ -2575,16 +2575,24 @@ def _model_plan_from_db(model_id: str) -> str | None:
         return None
     try:
         rows = (
-            get_client().table("models").select("plan").eq("id", model_id).limit(1).execute()
+            get_client()
+            .table("models")
+            .select("plan,image_url")
+            .eq("id", model_id)
+            .limit(1)
+            .execute()
         ).data or []
     except APIError:
-        logger.warning("Model plan lookup failed for %s", model_id, exc_info=True)
+        logger.warning("Model lookup failed for %s", model_id, exc_info=True)
         return None
-    plan = rows[0].get("plan") if rows else None
-    return plan if isinstance(plan, str) and plan.strip() else None
+    return rows[0] if rows else None
 
 
-def _required_model_tier(payload: CreateGenerationPayload, tier_levels: dict[str, int]) -> str:
+def _required_model_tier(
+    payload: CreateGenerationPayload,
+    tier_levels: dict[str, int],
+    catalogue: dict[str, Any] | None,
+) -> str:
     """Plan required for the selected model, taken from the catalogue rather than the client.
 
     The stricter of the stored plan and the client's value wins, so an honest client never sees
@@ -2594,13 +2602,30 @@ def _required_model_tier(payload: CreateGenerationPayload, tier_levels: dict[str
     from .plans import normalize_plan
 
     client_tier = normalize_plan(payload.model.planTier)
-    stored = _model_plan_from_db(payload.model.id)
-    if stored is None:
+    stored = (catalogue or {}).get("plan")
+    if not isinstance(stored, str) or not stored.strip():
         return client_tier
     stored_tier = normalize_plan(stored)
     if tier_levels.get(stored_tier, 0) >= tier_levels.get(client_tier, 0):
         return stored_tier
     return client_tier
+
+
+def _with_catalogue_model_image(
+    payload: CreateGenerationPayload,
+    catalogue: dict[str, Any] | None,
+) -> CreateGenerationPayload:
+    """Use the catalogue photo for catalogue models, so a client can't swap in another model's.
+
+    The generator prefers imageBase64 over imageUri, so the client's base64 is dropped too. Apps
+    already send this same stored URL (web) or a copy of it (mobile), so results don't change.
+    """
+
+    image_url = (catalogue or {}).get("image_url")
+    if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
+        return payload
+    model = payload.model.model_copy(update={"imageUri": image_url, "imageBase64": None})
+    return payload.model_copy(update={"model": model})
 
 
 @router.post("/", response_model=CreateGenerationResponse)
@@ -2638,7 +2663,9 @@ async def create_generation(
     from .plans import normalize_plan
 
     user_tier = normalize_plan(user.plan)
-    required_tier = _required_model_tier(payload, tier_levels)
+    catalogue = _catalogue_model(payload.model.id)
+    required_tier = _required_model_tier(payload, tier_levels, catalogue)
+    payload = _with_catalogue_model_image(payload, catalogue)
 
     if (
         not is_guest_generation
