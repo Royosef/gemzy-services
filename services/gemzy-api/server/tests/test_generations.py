@@ -2054,6 +2054,40 @@ def test_motion_generation_returns_immediately_with_queued_job(
     assert scheduled[0]["job"].reserved_credit_cost == 80
     assert scheduled[0]["job"].credit_cost_per_look == 40
 
+
+def test_motion_generation_saves_into_the_requested_campaign(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+) -> None:
+    monkeypatch.setenv("MOTION_FRAME_ALLOWED_HOSTS", "cdn.example")
+    scheduled: list[Any] = []
+    checked: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        generations, "_schedule_motion_generation_job", lambda job, **_: scheduled.append(job)
+    )
+    monkeypatch.setattr(
+        generations,
+        "_ensure_collections_belong",
+        lambda user_id, ids: checked.append((user_id, list(ids))),
+    )
+    current_user = UserState(id="user-123", name="Test User", plan="Pro", credits=100)
+    client.app.dependency_overrides[generations.get_current_user] = lambda: current_user
+    monkeypatch.setattr(generations, "get_client", lambda: _CreditClient(credits={"user-123": 100}))
+
+    response = client.post(
+        "/generations/motion",
+        json={
+            "prompt": "push in",
+            "firstFrameUrl": "https://cdn.example/source.png",
+            "duration": 5,
+            "collectionId": "campaign-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert checked == [("user-123", ["campaign-1"])]
+    assert scheduled[0].unsaved_collection_id == "campaign-1"
+
 def test_persist_generation_result_refreshes_draft_cover(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
