@@ -2031,6 +2031,7 @@ def list_all_collection_items(
     mediaType: Literal["image", "video"] | None = None,
     limit: int = Query(30, ge=1, le=100),
     cursor: str | None = None,
+    favorite: bool = False,
     user: UserState = Depends(get_current_user),
 ) -> CollectionItemsPage:
     """Paginated items across all of the user's campaigns (newest first).
@@ -2042,6 +2043,26 @@ def list_all_collection_items(
     sb = get_client()
     before = _parse_items_cursor(cursor)
 
+    favorite_filter: str | None = None
+    if favorite:
+        # Favourites (mobile Inspirations): items marked favourite, plus every item of a liked
+        # campaign.
+        liked_ids = [
+            row["id"]
+            for row in (
+                sb.table("collections")
+                .select("id")
+                .eq("user_id", user.id)
+                .eq("liked", True)
+                .execute()
+            ).data
+            or []
+            if row.get("id")
+        ]
+        favorite_filter = "is_favorite.eq.true"
+        if liked_ids:
+            favorite_filter += f",collection_id.in.({','.join(liked_ids)})"
+
     def base_query(bound: str | None):
         query = (
             sb.table("collection_items")
@@ -2050,29 +2071,33 @@ def list_all_collection_items(
             .order("created_at", desc=True)
             .order("id", desc=True)
         )
-        if mediaType == "video":
+        if favorite_filter:
+            query = query.or_(favorite_filter)
+        # Only one OR-group per query: with the favourite filter, the media type is applied below.
+        if mediaType == "video" and not favorite_filter:
             query = query.or_(_VIDEO_ITEM_FILTER)
         if bound:
             query = query.lt("created_at", bound)
         return query
 
-    if mediaType != "image":
+    if mediaType is None or (mediaType == "video" and not favorite_filter):
         rows = base_query(before).limit(limit + 1).execute().data or []
         return _build_items_page(rows, limit, include_signed=True)
 
+    want_video = mediaType == "video"
     collected: list[dict[str, Any]] = []
     bound = before
     more_rows = False
     for _ in range(_ITEMS_IMAGE_SCAN_BATCHES):
         batch = base_query(bound).limit(limit + 1).execute().data or []
-        collected.extend(row for row in batch if not _is_video_item_row(row))
+        collected.extend(row for row in batch if _is_video_item_row(row) == want_video)
         more_rows = len(batch) > limit
         if len(collected) > limit or not more_rows:
             break
         bound = str(batch[-1].get("created_at"))
     page = _build_items_page(collected, limit, include_signed=True)
     if page.nextCursor is None and more_rows and bound:
-        # Scan cap reached on a video-heavy stretch: let the client continue from here.
+        # Scan cap reached on a stretch of the other media type: let the client continue from here.
         page.nextCursor = f"{bound}|"
     return page
 
