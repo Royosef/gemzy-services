@@ -31,6 +31,18 @@ echo "Push..."
 docker push "$REGISTRY_URL/$IMAGE_NAME:$TAG"
 
 if [ "$ENV" == "prod" ]; then
+  # Keep the image being replaced as :prev so a rollback is one re-tag:
+  #   gcloud artifacts docker tags add "$REGISTRY_URL/$IMAGE_NAME:prev" "$REGISTRY_URL/$IMAGE_NAME:latest"
+  # Registry-side (no pull). Skipped when there is no :latest yet or it already is this build.
+  LATEST_DIGEST=$(gcloud artifacts docker images describe "$REGISTRY_URL/$IMAGE_NAME:latest" --format='value(image_summary.digest)' 2>/dev/null || true)
+  NEW_DIGEST=$(gcloud artifacts docker images describe "$REGISTRY_URL/$IMAGE_NAME:$TAG" --format='value(image_summary.digest)')
+  if [ -n "$LATEST_DIGEST" ] && [ "$LATEST_DIGEST" != "$NEW_DIGEST" ]; then
+    echo "Tagging current latest ($LATEST_DIGEST) as prev..."
+    gcloud artifacts docker tags add "$REGISTRY_URL/$IMAGE_NAME@$LATEST_DIGEST" "$REGISTRY_URL/$IMAGE_NAME:prev" --quiet
+  else
+    echo "No previous latest to keep (or it is this build); leaving :prev unchanged."
+  fi
+
   echo "Tagging as latest for prod deployment..."
   docker tag "$REGISTRY_URL/$IMAGE_NAME:$TAG" "$REGISTRY_URL/$IMAGE_NAME:latest"
   docker push "$REGISTRY_URL/$IMAGE_NAME:latest"
