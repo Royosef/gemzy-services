@@ -35,6 +35,7 @@ from . import (
     payments,
     plans_router,
     prompt_engines,
+    web_purchase,
 )
 from .user_admin import process_due_credit_resets, process_due_user_deletions
 from .logging_config import setup_logging
@@ -134,6 +135,7 @@ app.include_router(content.models_router)
 # Generation endpoints
 app.include_router(generations.router)
 app.include_router(inspirations.router)
+app.include_router(web_purchase.router)
 app.include_router(looks.router)
 app.include_router(looks.creation_look_presets_router)
 app.include_router(payments.router)

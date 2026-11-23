@@ -102,7 +102,35 @@ def record_revenue(event: dict) -> None:
     }
     timestamp = event.get("event_timestamp_ms")
     occurred = datetime.fromtimestamp(timestamp / 1000, timezone.utc).isoformat() if timestamp else None
+    if kind in ("INITIAL_PURCHASE", "NON_RENEWING_PURCHASE"):
+        properties.update(_web_attribution(user_id, event))
     enqueue(name, user_id, f"revenuecat:{event['id']}", properties, occurred)
+
+
+def _web_attribution(user_id: str, event: dict) -> dict:
+    """Did this buyer try to buy on the website in the 7 days before? (shared account)"""
+
+    purchased_ms = event.get("purchased_at_ms") or event.get("event_timestamp_ms")
+    purchased_at = (
+        datetime.fromtimestamp(purchased_ms / 1000, timezone.utc)
+        if isinstance(purchased_ms, (int, float))
+        else datetime.now(timezone.utc)
+    )
+    try:
+        from .web_purchase import recent_intent  # lazy: web_purchase imports auth -> analytics
+
+        intent = recent_intent(user_id, purchased_at)
+    except Exception:
+        logger.exception("Web purchase attribution lookup failed for %s", user_id)
+        return {}
+    if not intent:
+        return {"web_purchase_intent_within_7d": False}
+    return {
+        "web_purchase_intent_within_7d": True,
+        "web_purchase_intent_product": intent.get("product"),
+        "web_purchase_intent_source": intent.get("source"),
+        "web_purchase_intent_at": intent.get("created_at"),
+    }
 
 
 def drain_outbox() -> int:
