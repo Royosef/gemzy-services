@@ -124,6 +124,9 @@ def test_open_records_first_open_and_redirects(client, db, monkeypatch):
     assert op == "update"
     assert filters == {"id": INTENT, "is:app_link_opened_at": "null"}
     assert enqueue.call_args.args[:3] == ("Web App Link Clicked", USER, f"web-app-link:{INTENT}")
+    assert enqueue.call_args.args[3]["method"] == "qr"
+    client.get(f"/web-purchase/open?i={INTENT}&m=button", follow_redirects=False)
+    assert enqueue.call_args.args[3]["method"] == "button"
 
 
 @pytest.mark.parametrize("query", ["", "?i=not-a-uuid", "?i=https://evil.example"])

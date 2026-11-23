@@ -90,8 +90,11 @@ def record_intent(
 
 @router.get("/open", include_in_schema=False)
 @limiter.limit("60/minute")
-def open_app_link(request: Request, i: str | None = None) -> RedirectResponse:
-    """QR code target: notes the first open of an intent's link, then goes to the app link.
+def open_app_link(
+    request: Request, i: str | None = None, m: str | None = None
+) -> RedirectResponse:
+    """QR code / phone button target: notes the first open of an intent's link (`m`: "qr" or
+    "button"), then goes to the app link.
 
     Public (the phone that scans is usually not signed in). Always redirects to the same fixed
     smart link, so it can't be used as an open redirect; an unknown id just redirects.
@@ -117,7 +120,11 @@ def open_app_link(request: Request, i: str | None = None) -> RedirectResponse:
                     "Web App Link Clicked",
                     str(row["user_id"]),
                     f"web-app-link:{intent_id}",
-                    {"product": row.get("product"), "source": row.get("source"), "method": "qr"},
+                    {
+                        "product": row.get("product"),
+                        "source": row.get("source"),
+                        "method": "button" if m == "button" else "qr",
+                    },
                 )
         except Exception:
             # Tracking must never stop the visitor from reaching the store.
