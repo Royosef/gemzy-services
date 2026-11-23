@@ -38,6 +38,7 @@ def test_registration_does_not_depend_on_missing_profile(monkeypatch):
 def test_revenue_mapping_and_stable_retry_key(monkeypatch, kind, period, expected):
     enqueue = Mock()
     monkeypatch.setattr(analytics, "enqueue", enqueue)
+    monkeypatch.setattr(analytics, "_web_attribution", lambda *_: {})
     event = {"id": "rc-event-1", "app_user_id": USER, "type": kind, "period_type": period}
     analytics.record_revenue(event)
     analytics.record_revenue(event)
