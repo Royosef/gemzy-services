@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from . import analytics
@@ -88,17 +88,8 @@ def record_intent(
     return PurchaseIntentResponse(id=str(rows[0]["id"]), waitlisted=_waitlist_row(user.id) is not None)
 
 
-@router.get("/open", include_in_schema=False)
-@limiter.limit("60/minute")
-def open_app_link(
-    request: Request, i: str | None = None, m: str | None = None
-) -> RedirectResponse:
-    """QR code / phone button target: notes the first open of an intent's link (`m`: "qr" or
-    "button"), then goes to the app link.
-
-    Public (the phone that scans is usually not signed in). Always redirects to the same fixed
-    smart link, so it can't be used as an open redirect; an unknown id just redirects.
-    """
+def _record_open(i: str | None, m: str | None, opened_in: str | None = None) -> None:
+    """Notes the first open of an intent's app link. Never raises; unknown ids are ignored."""
 
     try:
         intent_id = str(UUID(i or ""))
@@ -116,20 +107,52 @@ def open_app_link(
             ).data or []
             if rows:
                 row = rows[0]
+                properties = {
+                    "product": row.get("product"),
+                    "source": row.get("source"),
+                    "method": "button" if m == "button" else "qr",
+                }
+                if opened_in is not None:
+                    properties["opened_in"] = opened_in
                 analytics.enqueue(
                     "Web App Link Clicked",
                     str(row["user_id"]),
                     f"web-app-link:{intent_id}",
-                    {
-                        "product": row.get("product"),
-                        "source": row.get("source"),
-                        "method": "button" if m == "button" else "qr",
-                    },
+                    properties,
                 )
         except Exception:
-            # Tracking must never stop the visitor from reaching the store.
+            # Tracking must never stop the visitor from reaching the store / the app.
             logger.exception("Failed to record app link open for intent %s", intent_id)
+
+
+@router.get("/open", include_in_schema=False)
+@limiter.limit("60/minute")
+def open_app_link(
+    request: Request, i: str | None = None, m: str | None = None
+) -> RedirectResponse:
+    """QR code / phone button target: notes the first open of an intent's link (`m`: "qr" or
+    "button"), then goes to the app link.
+
+    Public (the phone that scans is usually not signed in). Always redirects to the same fixed
+    smart link, so it can't be used as an open redirect; an unknown id just redirects.
+    """
+
+    _record_open(i, m)
     return RedirectResponse(app_link(), status_code=302, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/opened", status_code=204, include_in_schema=False)
+@limiter.limit("60/minute")
+def app_link_opened(
+    request: Request, i: str | None = None, m: str | None = None, via: str | None = None
+) -> Response:
+    """Called by the app and the landing page (sendBeacon, no body) once an intent's link opened.
+
+    Public: the intent id is the capability. Always 204, so it reveals nothing about ids.
+    """
+
+    _record_open(i, m, via if via in ("app", "web") else None)
+    return Response(status_code=204)
 
 
 @router.get("/waitlist", response_model=WaitlistResponse)
