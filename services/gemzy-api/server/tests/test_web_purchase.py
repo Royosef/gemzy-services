@@ -146,6 +146,67 @@ def test_open_survives_db_errors(client, monkeypatch):
     assert res.status_code == 302
 
 
+def test_opened_records_first_open_with_via(client, db, monkeypatch):
+    enqueue = Mock()
+    monkeypatch.setattr(analytics, "enqueue", enqueue)
+    db.responses[("web_purchase_intents", "update")] = [
+        {"user_id": USER, "product": "plan:pro:monthly", "source": "billing_page"}
+    ]
+    res = client.post(f"/web-purchase/opened?i={INTENT}&via=app")
+    assert res.status_code == 204
+    assert res.content == b""
+    _, op, _, filters = db.calls[0]
+    assert op == "update"
+    assert filters == {"id": INTENT, "is:app_link_opened_at": "null"}
+    assert enqueue.call_args.args[:3] == ("Web App Link Clicked", USER, f"web-app-link:{INTENT}")
+    assert enqueue.call_args.args[3] == {
+        "product": "plan:pro:monthly",
+        "source": "billing_page",
+        "method": "qr",
+        "opened_in": "app",
+    }
+    client.post(f"/web-purchase/opened?i={INTENT}&m=button&via=web")
+    assert enqueue.call_args.args[3]["method"] == "button"
+    assert enqueue.call_args.args[3]["opened_in"] == "web"
+
+
+def test_opened_second_call_does_not_enqueue_again(client, db, monkeypatch):
+    enqueue = Mock()
+    monkeypatch.setattr(analytics, "enqueue", enqueue)
+    # Nothing updated: the link was already opened once.
+    db.responses[("web_purchase_intents", "update")] = []
+    res = client.post(f"/web-purchase/opened?i={INTENT}&via=app")
+    assert res.status_code == 204
+    enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize("query", ["", "?i=not-a-uuid", "?via=app", "?i=https://evil.example&via=web"])
+def test_opened_with_bad_id_is_204_and_writes_nothing(client, db, query):
+    res = client.post(f"/web-purchase/opened{query}")
+    assert res.status_code == 204
+    assert db.calls == []
+
+
+@pytest.mark.parametrize("via", ["", "ios", "APP", "web;x"])
+def test_opened_ignores_unknown_via(client, db, monkeypatch, via):
+    enqueue = Mock()
+    monkeypatch.setattr(analytics, "enqueue", enqueue)
+    db.responses[("web_purchase_intents", "update")] = [
+        {"user_id": USER, "product": "plan:pro:monthly", "source": "billing_page"}
+    ]
+    res = client.post("/web-purchase/opened", params={"i": INTENT, "via": via})
+    assert res.status_code == 204
+    assert "opened_in" not in enqueue.call_args.args[3]
+
+
+def test_opened_survives_db_errors(client, monkeypatch):
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(web_purchase, "get_client", boom)
+    assert client.post(f"/web-purchase/opened?i={INTENT}").status_code == 204
+
+
 def test_app_link_env_must_be_https(monkeypatch):
     monkeypatch.setenv("APP_SMART_LINK", "javascript:alert(1)")
     assert web_purchase.app_link() == web_purchase.DEFAULT_APP_LINK
